@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scholia"
+version = "0.1.0"
+description = "Local citation/grounding engine over a Zotero literature mirror."
+requires-python = ">=3.11"
+dependencies = [
+    "sentence-transformers>=2.7",
+    "faiss-cpu>=1.8",
+    "pyyaml>=6.0",
+    "click>=8.1",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+scholia = "scholia.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: end-to-end tests that download/run the real embedding model (deselected by default)",
+]
+addopts = "-m 'not integration'"
