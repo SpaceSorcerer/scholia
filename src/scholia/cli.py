@@ -36,7 +36,7 @@ _NOMIC_DEFAULT_THRESHOLD = 0.73
 def default_threshold_for(model_name: str) -> float:
     """Pick an embedder-appropriate default claim-check threshold by model name.
 
-    nomic models -> 0.70 (inflated floor). MiniLM / FakeEmbedder / anything
+    nomic models -> 0.73 (inflated floor). MiniLM / FakeEmbedder / anything
     unknown -> 0.45.
     """
     name = (model_name or "").lower()
@@ -116,7 +116,7 @@ def index(ctx: click.Context, corpus_dir: Path | None, index_dir: Path | None,
 @click.option("--k", default=5, show_default=True, help="Number of papers to return.")
 @click.option("--threshold", default=None, type=float,
               help="Claim-check cosine threshold. Default is embedder-aware "
-                   "(0.45 for MiniLM/Fake, 0.70 for nomic).")
+                   "(0.45 for MiniLM/Fake, 0.73 for nomic).")
 @click.option("--model", "model_name", default=None,
               help="Embedder model. Default: adopt the index's stored embedder.")
 @click.option("--fake-embedder", is_flag=True)

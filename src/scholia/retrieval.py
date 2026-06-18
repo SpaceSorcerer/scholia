@@ -27,6 +27,10 @@ def retrieve(
     """
     if not passage or not passage.strip():
         return []
-    query_vector = embedder.embed_query(passage)
+    _embed_q = getattr(embedder, "embed_query", None)
+    if _embed_q is not None:
+        query_vector = _embed_q(passage)
+    else:
+        query_vector = embedder.embed([passage])[0]
     results = index.search(query_vector, k)
     return [Hit(paper=p, score=s) for p, s in results]

@@ -132,3 +132,44 @@ def test_fake_embedder_doc_and_query_equal_plain_embed():
 
 def test_fake_embedder_satisfies_protocol_with_doc_query():
     assert isinstance(FakeEmbedder(), Embedder)
+
+
+# --- Back-compat: embed-only (v0.1.0 API) embedder ---
+
+class _EmbedOnlyEmbedder:
+    """Minimal third-party embedder: only dim + embed(); no embed_documents/embed_query."""
+
+    dim: int = 8
+
+    def embed(self, texts: list[str]) -> np.ndarray:
+        # Return distinct deterministic vectors so retrieval can rank correctly.
+        vecs = np.zeros((len(texts), self.dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            vecs[i, 0] = float(hash(t) % 1000) / 1000.0
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return (vecs / norms).astype(np.float32)
+
+
+def test_embed_only_embedder_satisfies_protocol():
+    """An embedder with only dim + embed() must pass isinstance check."""
+    assert isinstance(_EmbedOnlyEmbedder(), Embedder)
+
+
+def test_embed_only_embedder_round_trips_build_and_retrieve(tmp_path):
+    """An embed-only embedder must work through build_index + retrieve with no AttributeError."""
+    from pathlib import Path
+    from scholia.corpus import load_corpus
+    from scholia.index import build_index
+    from scholia.retrieval import retrieve
+
+    fixtures = Path(__file__).parent / "fixtures" / "corpus"
+    papers = load_corpus(fixtures)
+    emb = _EmbedOnlyEmbedder()
+
+    # build_index must not raise AttributeError
+    idx = build_index(papers, emb, tmp_path / "embed_only_idx")
+
+    # retrieve must not raise AttributeError
+    hits = retrieve(papers[0].embedding_text, emb, idx, k=3)
+    assert isinstance(hits, list)

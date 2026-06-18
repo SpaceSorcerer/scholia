@@ -116,7 +116,8 @@ def build_index(
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
 
-    vectors = embedder.embed_documents([p.embedding_text for p in papers])
+    _embed_docs = getattr(embedder, "embed_documents", None) or embedder.embed
+    vectors = _embed_docs([p.embedding_text for p in papers])
     vectors = np.asarray(vectors, dtype=np.float32)
     dim = int(vectors.shape[1])
     embedder_model = _embedder_model_name(embedder)

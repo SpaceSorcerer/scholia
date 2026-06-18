@@ -12,21 +12,19 @@ import numpy as np
 class Embedder(Protocol):
     """Turns texts into L2-normalized float32 vectors of shape (n, dim).
 
-    ``embed_documents`` (corpus side) and ``embed_query`` (query side) let an
-    embedder apply asymmetric task instructions (e.g. nomic-embed-v1.5's
-    ``search_document:`` / ``search_query:`` prefixes). The default behaviour
-    (see ``_DefaultPrefixMixin``) is to fall through to ``embed`` unchanged.
+    The required surface is ONLY ``dim: int`` and ``embed(texts) -> ndarray``.
+    This is the v0.1.0 public extension API; third-party embedders implementing
+    only these two members satisfy ``isinstance(obj, Embedder)``.
+
+    ``embed_documents`` (corpus side) and ``embed_query`` (query side) are
+    OPTIONAL refinements that let an embedder apply asymmetric task instructions
+    (e.g. nomic-embed-v1.5's ``search_document:`` / ``search_query:`` prefixes).
+    When absent, callers fall through to ``embed`` unchanged.
     """
 
     dim: int
 
     def embed(self, texts: list[str]) -> np.ndarray:
-        ...
-
-    def embed_documents(self, texts: list[str]) -> np.ndarray:
-        ...
-
-    def embed_query(self, text: str) -> np.ndarray:
         ...
 
 
