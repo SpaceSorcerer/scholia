@@ -32,11 +32,13 @@ def test_index_then_cite_supported(tmp_path):
     assert "Indexed 3 papers" in res_index.output
 
     # Query with a paper's own text -> high self-similarity -> SUPPORTED.
+    # --no-rerank pins the bi-encoder cosine path this test targets; the re-rank
+    # SUPPORTED path is covered in test_cli_rerank.py.
     passage = "QKI regulates alternative splicing in cardiomyocytes\n\nQKI is an RNA-binding protein that controls pre-mRNA alternative splicing during cardiac differentiation."
     res_cite = runner.invoke(
         cli,
         ["cite", passage, "--index-dir", str(idx_dir),
-         "--threshold", "0.5", "--fake-embedder"],
+         "--threshold", "0.5", "--no-rerank", "--fake-embedder"],
     )
     assert res_cite.exit_code == 0, res_cite.output
     assert "AAAAAAAA" in res_cite.output
@@ -144,7 +146,9 @@ def test_default_threshold_for_picks_per_embedder():
 
 
 def test_cite_uses_minilm_default_threshold_in_output(tmp_path):
-    """With a Fake/MiniLM index and no --threshold, the claim-check line shows 0.45."""
+    """With a Fake/MiniLM index and no --threshold, the bi-encoder claim-check
+    line shows 0.45. (--no-rerank pins the bi-encoder cosine path; the re-rank
+    default is exercised separately in test_cli_rerank.py.)"""
     runner = CliRunner()
     idx_dir = tmp_path / "idx"
     runner.invoke(
@@ -155,7 +159,7 @@ def test_cite_uses_minilm_default_threshold_in_output(tmp_path):
     res = runner.invoke(
         cli,
         ["cite", "completely unrelated topic", "--index-dir", str(idx_dir),
-         "--fake-embedder"],
+         "--no-rerank", "--fake-embedder"],
     )
     assert res.exit_code == 0, res.output
     assert "0.45" in res.output

@@ -67,6 +67,45 @@ whitespace-only passages are short-circuited to `UNSUPPORTED` before embedding
 (a blank vector otherwise floats near the corpus centroid and scores ~0.74).
 Override anytime with `--threshold`.
 
+## Re-ranking (cross-encoder)
+
+The bi-encoder embeds the query and each document independently, so its cosine
+margins are tight: on the real 361-paper library the *weakest* genuine
+on-domain hit (0.777) sits only ~0.09 above the *strongest* off-domain hit
+(0.689). A cross-encoder scores each `(query, paper)` pair **jointly**, which is
+far more discriminative. `scholia cite` therefore re-ranks the FAISS top
+`--candidate-k` (default 30) candidates with a cross-encoder and reports the
+re-ranked scores. Re-ranking is **on by default**; pass `--no-rerank` for the
+plain bi-encoder path. If the reranker model cannot load (offline / missing
+weights), `cite` prints a one-line notice and falls back to the bi-encoder.
+
+```bash
+scholia cite "<passage>"                  # rerank on by default (MiniLM)
+scholia cite "<passage>" --no-rerank       # bi-encoder cosine only
+scholia cite "<passage>" --candidate-k 50  # widen the rerank pool
+scholia cite "<passage>" --rerank-model BAAI/bge-reranker-v2-m3
+```
+
+Default reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0, ~22 M
+params, ~2.2 s/query on CPU). Higher-accuracy option:
+`BAAI/bge-reranker-v2-m3` (Apache-2.0, but ~42 s/query on CPU). Both download
+once on first use (local CPU only, no cloud — same posture as the embedder).
+
+### Re-rank claim-check threshold (reranker-aware)
+
+Cross-encoder scores are a **different scale** than cosine, so the
+SUPPORTED/UNSUPPORTED cutoff is re-derived per reranker (empirically, on the
+real 361-paper library):
+
+| Reranker | Score type | On-domain top-1 | Off-domain/gibberish top-1 | Default threshold |
+|---|---|---|---|---|
+| `ms-marco-MiniLM-L-6-v2` | relevance logit | +2.11 … +8.47 | −11.04 … −4.87 | **0.0** |
+| `bge-reranker-v2-m3` | relevance prob (0–1) | 0.439 … 0.999 | 0.001 … 0.038 | **0.20** |
+
+The MiniLM cross-encoder widens the genuine-vs-off-domain margin from the
+bi-encoder's **0.089** to **6.98 logits** (~78× wider), with `0.0` sitting
+cleanly in the gap. `--threshold` overrides the reranker-aware default.
+
 ## Tests
 
 ```bash

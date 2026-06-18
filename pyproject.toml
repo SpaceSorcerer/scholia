@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scholia"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local citation/grounding engine over a Zotero literature mirror."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -15,6 +15,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    # Provides BOTH the bi-encoder (SentenceTransformer) and the cross-encoder
+    # re-ranker (CrossEncoder). Apache-2.0. The default reranker model
+    # cross-encoder/ms-marco-MiniLM-L-6-v2 and the optional BAAI/bge-reranker-v2-m3
+    # are both Apache-2.0; downloaded once on first use (local CPU, no cloud).
     "sentence-transformers>=2.7",
     "faiss-cpu>=1.8",
     "pyyaml>=6.0",
