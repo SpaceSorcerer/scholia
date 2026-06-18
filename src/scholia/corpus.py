@@ -53,3 +53,22 @@ def parse_mirror_note(path: Path) -> Paper:
         abstract=_extract_abstract(body),
         tags=_list("tags"),
     )
+
+
+def load_corpus(corpus_dir: Path) -> list[Paper]:
+    """Parse every *.md note in corpus_dir (sorted) into Papers. Read-only.
+
+    Files without valid frontmatter are skipped. Papers with neither title
+    nor abstract are skipped (nothing to embed).
+    """
+    corpus_dir = Path(corpus_dir)
+    papers: list[Paper] = []
+    for md_path in sorted(corpus_dir.glob("*.md")):
+        try:
+            paper = parse_mirror_note(md_path)
+        except ValueError:
+            continue
+        if not paper.title and not paper.abstract:
+            continue
+        papers.append(paper)
+    return papers
