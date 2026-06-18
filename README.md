@@ -145,6 +145,58 @@ The MiniLM cross-encoder widens the genuine-vs-off-domain margin from the
 bi-encoder's **0.089** to **6.98 logits** (~78× wider), with `0.0` sitting
 cleanly in the gap. `--threshold` overrides the reranker-aware default.
 
+## Serve / API
+
+`scholia serve` loads the index + models **once** at startup and exposes a small
+JSON API over localhost for UI clients (overlay apps, browser extensions, etc.)
+so they get fast, stateful responses without reloading models per query.
+
+```bash
+scholia serve --index-dir ./index          # default port 8765
+scholia serve --index-dir ./index --port 9000
+scholia serve --index-dir ./index --no-rerank         # bi-encoder only
+scholia serve --index-dir ./index --fake-embedder --fake-source  # offline/test
+```
+
+### Endpoints (127.0.0.1 only)
+
+**`GET /health`**
+```json
+{"status": "ok", "papers": 210, "embedder": "nomic-ai/nomic-embed-text-v1.5"}
+```
+
+**`POST /cite`** — body: `{"passage": str, "k"?: int, "threshold"?: float, "rerank"?: bool}`
+```json
+{
+  "suggestions": [
+    {"rank": 1, "score": 3.21, "first_author": "Chen", "year": "2021",
+     "title": "QKI regulates...", "zotero_key": "ABCD1234",
+     "zotero_link": "zotero://select/library/items/ABCD1234", "doi": "10.1038/..."}
+  ],
+  "claim_check": {"supported": true, "top_score": 3.21, "threshold": 0.0},
+  "ranking_signal": "reranked (cross-encoder)"
+}
+```
+
+**`POST /discover`** — body: `{"passage": str, "limit"?: int}`
+```json
+{
+  "candidates": [
+    {"title": "...", "authors": ["Smith, J."], "year": "2022",
+     "doi": "10.1234/...", "snippet": "...", "source": "semanticscholar"}
+  ],
+  "query": "QKI RNA binding splicing"
+}
+```
+
+### Privacy
+
+The server **binds 127.0.0.1 only** — never 0.0.0.0. Nothing in your draft
+leaves the machine. The only outbound traffic is (a) discovery's short keyword
+query to scholarly APIs (identical to `scholia discover`), and (b) nothing else.
+No cloud LLM is involved. No authentication is required for a localhost-only
+binding.
+
 ## Tests
 
 ```bash

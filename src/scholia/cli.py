@@ -454,5 +454,64 @@ def _run_add(ctx: click.Context, doi: str) -> None:
 cli.add_command(discover_cmd, name="discover")
 
 
+@cli.command()
+@click.option("--index-dir", type=click.Path(path_type=Path),
+              default=None,
+              help="FAISS index directory. Overrides SCHOLIA_INDEX_DIR env var.")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Interface to bind. Localhost only — never expose to a network.")
+@click.option("--port", default=8765, show_default=True, type=int,
+              help="TCP port to listen on.")
+@click.option("--no-rerank", "no_rerank", is_flag=True,
+              help="Disable cross-encoder re-ranking (bi-encoder cosine only).")
+@click.option("--fake-embedder", is_flag=True,
+              help="Use the deterministic test embedder (no model download). "
+                   "Implies --fake-reranker.")
+@click.option("--fake-source", is_flag=True,
+              help="Use the deterministic offline discovery source (no network).")
+@click.pass_context
+def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
+          no_rerank: bool, fake_embedder: bool, fake_source: bool) -> None:
+    """Start a localhost JSON API bridge (cite/discover) for UI clients.
+
+    Loads the index + models once at startup so every request is fast. Binds
+    127.0.0.1 only — nothing leaves the machine except discovery's keyword
+    queries to scholarly APIs (unchanged from the CLI). No prose is generated.
+
+    Endpoints:
+      GET  /health   → {"status":"ok","papers":N,"embedder":...}
+      POST /cite     → {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
+      POST /discover → {"passage":str,"limit"?:int}
+    """
+    from scholia.server import load_state, serve as _serve
+
+    if host != "127.0.0.1":
+        click.echo(
+            "Warning: binding to a non-localhost address exposes your library "
+            "to the local network.",
+            err=True,
+        )
+
+    resolved_index_dir = index_dir or _default_index_dir()
+    state = load_state(
+        resolved_index_dir,
+        no_rerank=no_rerank,
+        fake_embedder=fake_embedder,
+        fake_source=fake_source,
+    )
+
+    click.echo(f"Scholia serving on http://{host}:{port}")
+    click.echo(
+        f"  {len(state.index._papers)} papers | embedder: "
+        f"{state.index.embedder_model or 'unknown'}"
+    )
+    httpd = _serve(host, port, state)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        click.echo("\nShutting down.")
+        httpd.shutdown()
+
+
 if __name__ == "__main__":  # pragma: no cover - allows `python -m scholia.cli`
     cli()
