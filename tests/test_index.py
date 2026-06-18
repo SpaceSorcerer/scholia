@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from scholia.corpus import load_corpus
 from scholia.embedders import FakeEmbedder
@@ -44,3 +45,36 @@ def test_search_respects_k(tmp_path):
     qvec = emb.embed(["unrelated query text"])[0]
     hits = idx.search(qvec, k=2)
     assert len(hits) == 2
+
+
+# --- Finding A: empty-corpus guard ---
+
+def test_build_index_empty_raises_value_error(tmp_path):
+    emb = FakeEmbedder(dim=16)
+    with pytest.raises(ValueError, match="corpus is empty"):
+        build_index([], emb, tmp_path / "idx")
+
+
+# --- Finding B: missing-dir guard and empty-index search ---
+
+def test_load_missing_dir_raises_file_not_found(tmp_path):
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(FileNotFoundError, match="No index at"):
+        ScholiaIndex.load(missing)
+
+
+def test_load_empty_dir_raises_file_not_found(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match="No index at"):
+        ScholiaIndex.load(empty)
+
+
+def test_search_on_empty_index_returns_empty_list(tmp_path):
+    """A ScholiaIndex with 0 vectors must return [] without crashing."""
+    import faiss as _faiss
+    fi = _faiss.IndexFlatIP(16)
+    empty_idx = ScholiaIndex(fi, [])
+    qvec = np.zeros(16, dtype=np.float32)
+    hits = empty_idx.search(qvec, k=5)
+    assert hits == []

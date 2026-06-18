@@ -14,9 +14,16 @@ pip install -e .
 ## Build the index
 
 ```bash
-scholia index            # uses the default literature mirror + .scholia_index
-scholia index --corpus "C:\path\to\mirror" --index-dir ".scholia_index"
+# Option A — pass paths explicitly:
+scholia index --corpus "/path/to/zotero-mirror" --index-dir "/path/to/index"
+
+# Option B — set env vars once (e.g. in your shell profile):
+export SCHOLIA_CORPUS="/path/to/zotero-mirror"
+export SCHOLIA_INDEX_DIR="/path/to/index"
+scholia index
 ```
+
+If neither `--corpus` nor `SCHOLIA_CORPUS` is provided, `scholia index` exits with a helpful error. The default index directory (when `SCHOLIA_INDEX_DIR` is unset) is `~/.scholia/index`.
 
 ## Cite-ground a passage
 
@@ -40,3 +47,10 @@ Default embedder: `nomic-ai/nomic-embed-text-v1.5` (CPU). Faster fallback:
 pytest                 # unit tests only (deterministic FakeEmbedder; no download)
 pytest -m integration  # add the real-model end-to-end test (downloads weights)
 ```
+
+## Attribution
+
+Scholia depends on [sentence-transformers](https://github.com/UKPLab/sentence-transformers)
+and [transformers](https://github.com/huggingface/transformers), both licensed under the
+Apache License 2.0. Their respective NOTICE files and license terms are included in their
+distribution packages.

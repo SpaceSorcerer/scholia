@@ -48,12 +48,20 @@ class ScholiaIndex:
     @classmethod
     def load(cls, index_dir: Path) -> "ScholiaIndex":
         index_dir = Path(index_dir)
-        faiss_index = faiss.read_index(str(index_dir / _INDEX_FILE))
-        meta = json.loads((index_dir / _META_FILE).read_text(encoding="utf-8"))
+        faiss_path = index_dir / _INDEX_FILE
+        meta_path = index_dir / _META_FILE
+        if not faiss_path.exists() or not meta_path.exists():
+            raise FileNotFoundError(
+                f"No index at {index_dir}. Run `scholia index` first."
+            )
+        faiss_index = faiss.read_index(str(faiss_path))
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         papers = [_meta_to_paper(d) for d in meta]
         return cls(faiss_index, papers)
 
     def search(self, query_vector: np.ndarray, k: int) -> list[tuple[Paper, float]]:
+        if len(self._papers) == 0:
+            return []
         q = np.asarray(query_vector, dtype=np.float32).reshape(1, -1)
         k = min(k, len(self._papers))
         scores, ids = self._index.search(q, k)
@@ -68,6 +76,9 @@ class ScholiaIndex:
 def build_index(
     papers: list[Paper], embedder: Embedder, index_dir: Path
 ) -> ScholiaIndex:
+    if not papers:
+        raise ValueError("Cannot build index: corpus is empty (no papers to index).")
+
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
 
