@@ -3,16 +3,32 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import click
 
-from scholia.corpus import load_corpus_reporting
+from scholia.corpus import load_corpus, load_corpus_reporting
+from scholia.discovery import (
+    DiscoveryUnavailable,
+    FakeDiscoverySource,
+    PubMedSource,
+    SemanticScholarSource,
+    build_query,
+    discover,
+)
 from scholia.embedders import FakeEmbedder, NomicEmbedder
 from scholia.grounding import claim_check, format_citation_suggestions
 from scholia.index import ScholiaIndex, build_index
+from scholia.models import Paper
 from scholia.rerank import CrossEncoderReranker, FakeReranker
 from scholia.retrieval import retrieve, retrieve_reranked
+
+# Path to the existing triple-validating ingest tool (do not modify it). The
+# --add path shells out to this so the user's real library is only ever mutated
+# by the vetted ingester, never by Scholia directly.
+_ZOTERO_INGEST = Path(r"E:\Claude\zotero-tools\zotero_ingest.py")
 
 DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 DEFAULT_THRESHOLD = 0.45
@@ -290,6 +306,152 @@ def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
             f"CLAIM-CHECK: UNSUPPORTED by your library "
             f"(top={verdict.top_score:.3f} < {resolved_threshold})"
         )
+
+
+def _load_library(
+    corpus_dir: Path | None, index_dir: Path | None
+) -> list[Paper]:
+    """Load the user's library for dedup: prefer --corpus (mirror notes), else
+    the prebuilt index's metadata. Returns ``[]`` when neither is available
+    (discover then surfaces everything as 'new')."""
+    if corpus_dir is not None:
+        try:
+            return load_corpus(corpus_dir)
+        except (OSError, ValueError):
+            return []
+    if index_dir is not None:
+        try:
+            return list(ScholiaIndex.load(index_dir)._papers)
+        except (FileNotFoundError, OSError, ValueError):
+            return []
+    return []
+
+
+def _format_candidates(query: str, candidates: list) -> str:
+    """Render discovered NEW candidates as a readable, clearly-framed block."""
+    lines = [f"Search query (only this left your machine): {query}", ""]
+    if not candidates:
+        lines.append("No NEW candidate papers found (everything relevant is "
+                     "already in your library, or the search returned nothing).")
+        return "\n".join(lines)
+    lines.append(
+        f"{len(candidates)} candidate paper(s) NOT in your library "
+        f"(suggestions only — validate before adding):"
+    )
+    for rank, c in enumerate(candidates, 1):
+        first_author = (c.authors[0].split(",")[0].strip()
+                        if c.authors else "Unknown")
+        lines.append(
+            f"  {rank}. [{c.source} {c.score:.3f}] {first_author} "
+            f"({c.year or 'n.d.'}) — {c.title}"
+        )
+        if c.doi:
+            lines.append(f"     doi: https://doi.org/{c.doi}")
+        else:
+            lines.append("     doi: (none reported)")
+        if c.abstract_snippet:
+            lines.append(f"     {c.abstract_snippet}")
+    return "\n".join(lines)
+
+
+@cli.command()
+@click.argument("passage")
+@click.option("--limit", default=8, show_default=True,
+              help="Max NEW candidate papers to return.")
+@click.option("--corpus", "corpus_dir", type=click.Path(path_type=Path),
+              default=None,
+              help="Zotero mirror dir to dedup against (read-only). Overrides "
+                   "SCHOLIA_CORPUS. Preferred over --index-dir for dedup.")
+@click.option("--index-dir", type=click.Path(path_type=Path), default=None,
+              help="Prebuilt FAISS index dir to dedup against. Overrides "
+                   "SCHOLIA_INDEX_DIR.")
+@click.option("--fake-source", is_flag=True,
+              help="Use the deterministic offline source (tests/offline). No "
+                   "network.")
+@click.option("--add", "add_doi", default=None,
+              help="Validate + add this DOI to Zotero via the existing "
+                   "zotero_ingest.py (triple-validates, then adds). Re-index "
+                   "afterwards.")
+@click.pass_context
+def discover_cmd(ctx: click.Context, passage: str, limit: int,
+                 corpus_dir: Path | None, index_dir: Path | None,
+                 fake_source: bool, add_doi: str | None) -> None:
+    """Find relevant papers NOT yet in your library for PASSAGE.
+
+    Suggestions only — Scholia never writes prose or auto-adds. Only a short
+    keyword query (not your draft) is sent to the search APIs; no cloud LLM is
+    used. Use --add <DOI> to validate + add a pick via zotero_ingest.py.
+    """
+    resolved_corpus = corpus_dir or _default_corpus()
+    resolved_index_dir = index_dir or _default_index_dir()
+
+    # If --add is given, skip the search entirely and route to the ingester.
+    if add_doi:
+        _run_add(ctx, add_doi)
+        return
+
+    library = _load_library(resolved_corpus, resolved_index_dir)
+
+    if fake_source:
+        sources = [FakeDiscoverySource(source_name="semanticscholar"),
+                   FakeDiscoverySource(source_name="pubmed")]
+    else:
+        sources = [SemanticScholarSource(), PubMedSource()]
+
+    try:
+        candidates = discover(passage, sources=sources, library=library,
+                              limit=limit)
+    except DiscoveryUnavailable as exc:
+        click.echo(
+            f"Discovery sources unavailable (offline or rate-limited): {exc}",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+
+    query = build_query(passage)
+    click.echo(_format_candidates(query, candidates))
+    click.echo(
+        "\nTip: `scholia discover \"<passage>\" --add <DOI>` validates + adds a "
+        "pick to Zotero, then run `scholia index` to re-index."
+    )
+
+
+def _run_add(ctx: click.Context, doi: str) -> None:
+    """Shell out to the existing zotero_ingest.py to validate + add a DOI.
+
+    Scholia never mutates Zotero itself: the vetted, triple-validating ingester
+    is the only writer. On success we remind the user to re-index; on failure we
+    surface a clean message (no traceback) and exit non-zero.
+    """
+    cmd = [sys.executable, str(_ZOTERO_INGEST), "--doi", doi]
+    click.echo(f"Validating + adding {doi} via zotero_ingest.py …")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        click.echo(f"Could not launch zotero_ingest.py: {exc}", err=True)
+        ctx.exit(1)
+        return
+    if getattr(proc, "stdout", ""):
+        click.echo(proc.stdout)
+    if proc.returncode != 0:
+        if getattr(proc, "stderr", ""):
+            click.echo(proc.stderr, err=True)
+        click.echo(
+            f"Add failed (zotero_ingest.py exited {proc.returncode}). Nothing "
+            f"was added.",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    click.echo(
+        f"Added {doi}. Re-index to pick it up: `scholia index`."
+    )
+
+
+# Register under the user-facing name `discover` (the function is named
+# discover_cmd to avoid shadowing the imported discover() orchestrator).
+cli.add_command(discover_cmd, name="discover")
 
 
 if __name__ == "__main__":  # pragma: no cover - allows `python -m scholia.cli`

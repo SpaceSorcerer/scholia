@@ -36,6 +36,45 @@ Output: ranked supporting papers (first author, year, title, Zotero key,
 `zotero://` link, DOI) followed by a `CLAIM-CHECK` line. Below the threshold,
 the passage is flagged `UNSUPPORTED by your library`.
 
+## Discovery — find relevant papers *not* in your library
+
+While `cite` grounds a passage in papers you **already have**, `discover` does
+the opposite: it searches public scholarly APIs for relevant papers that are
+**not yet in your library**, so you can validate and add them.
+
+```bash
+scholia discover "QKI controls alternative splicing during cardiomyocyte differentiation."
+scholia discover "<passage>" --limit 8 --corpus "/path/to/zotero-mirror"
+scholia discover "<passage>" --index-dir "/path/to/index"   # dedup against the index
+scholia discover "<passage>" --fake-source                  # offline/deterministic
+```
+
+It queries **Semantic Scholar** (Academic Graph) and **PubMed** (E-utilities),
+merges and de-dupes the results, drops anything already in your library (matched
+by DOI, or by title when no DOI), and prints the ranked **new** candidates — each
+clearly framed as *not in your library, suggestions only*. Scholia never writes
+prose and never auto-adds; discovery only finds and suggests papers.
+
+Add a pick (validate first, then add) via the existing triple-validating
+ingester:
+
+```bash
+scholia discover "<passage>" --add 10.1242/jcs.230276
+```
+
+`--add` shells out to `zotero_ingest.py`, which triple-validates the DOI
+(CrossRef + PubMed), de-dupes against Zotero, and writes the Obsidian mirror
+note. Re-index afterwards (`scholia index`) so the new paper is searchable.
+
+### Privacy
+
+Only a **short keyword query** ever leaves your machine — never your draft.
+`discover` extracts a focused key-term string locally (stopword-filtered, capped
+at a handful of content words) and sends *only that string* to the search APIs.
+The draft passage itself is never transmitted, and **no cloud LLM is involved**
+at any step. The search backends use the Python standard library (`urllib`)
+only — no extra dependency.
+
 ## Models
 
 Default embedder: `nomic-ai/nomic-embed-text-v1.5` (CPU). Faster fallback:
