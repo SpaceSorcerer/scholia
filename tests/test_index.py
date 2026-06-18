@@ -47,6 +47,50 @@ def test_search_respects_k(tmp_path):
     assert len(hits) == 2
 
 
+# --- Item 4: embedder identity persisted in metadata ---
+
+def test_build_index_persists_embedder_model_and_dim(tmp_path):
+    import json
+    papers, emb, idx = _build(tmp_path)
+    assert idx.embedder_model == "FakeEmbedder"
+    assert idx.dim == 16
+    meta = json.loads((tmp_path / "idx" / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["embedder_model"] == "FakeEmbedder"
+    assert meta["dim"] == 16
+    assert len(meta["papers"]) == len(papers)
+
+
+def test_loaded_index_exposes_embedder_model_and_dim(tmp_path):
+    _build(tmp_path)
+    reloaded = ScholiaIndex.load(tmp_path / "idx")
+    assert reloaded.embedder_model == "FakeEmbedder"
+    assert reloaded.dim == 16
+
+
+def test_load_legacy_list_metadata_still_works(tmp_path):
+    """A pre-v0.1.1 metadata.json (bare list of papers) must still load."""
+    import json
+    import faiss as _faiss
+    papers = load_corpus(FIXTURES / "corpus")
+    emb = FakeEmbedder(dim=16)
+    vecs = emb.embed_documents([p.embedding_text for p in papers])
+    idx_dir = tmp_path / "legacy"
+    idx_dir.mkdir()
+    fi = _faiss.IndexFlatIP(16)
+    fi.add(np.asarray(vecs, dtype=np.float32))
+    _faiss.write_index(fi, str(idx_dir / "index.faiss"))
+    # Legacy: bare list of paper dicts (no embedder_model/dim wrapper).
+    from scholia.index import _paper_to_meta
+    legacy = [_paper_to_meta(p) for p in papers]
+    (idx_dir / "metadata.json").write_text(
+        json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+    )
+    reloaded = ScholiaIndex.load(idx_dir)
+    assert len(reloaded._papers) == len(papers)
+    assert reloaded.embedder_model == ""
+    assert reloaded.dim == 0
+
+
 # --- Finding A: empty-corpus guard ---
 
 def test_build_index_empty_raises_value_error(tmp_path):

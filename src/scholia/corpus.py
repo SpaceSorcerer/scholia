@@ -27,7 +27,14 @@ def parse_mirror_note(path: Path) -> Paper:
     if not fm_match:
         raise ValueError(f"No YAML frontmatter found in {path}")
 
-    meta = yaml.safe_load(fm_match.group(1)) or {}
+    # Real-world mirror notes contain malformed frontmatter (e.g. `tags:[]`
+    # with no space, which is invalid YAML). yaml.safe_load raises a
+    # yaml.YAMLError for those; re-raise as ValueError so load_corpus's skip
+    # path treats a malformed note the same as a missing-frontmatter note.
+    try:
+        meta = yaml.safe_load(fm_match.group(1)) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Malformed YAML frontmatter in {path}: {exc}") from exc
     body = text[fm_match.end():]
 
     def _str(key: str) -> str:
@@ -55,20 +62,39 @@ def parse_mirror_note(path: Path) -> Paper:
     )
 
 
-def load_corpus(corpus_dir: Path) -> list[Paper]:
+def load_corpus_reporting(corpus_dir: Path) -> tuple[list[Paper], int]:
     """Parse every *.md note in corpus_dir (sorted) into Papers. Read-only.
 
-    Files without valid frontmatter are skipped. Papers with neither title
-    nor abstract are skipped (nothing to embed).
+    Returns ``(papers, skipped_count)``. A note is skipped (and counted) when
+    its frontmatter is missing or malformed (e.g. invalid YAML such as
+    ``tags:[]``), or when it yields a Paper with neither title nor abstract
+    (nothing to embed). One bad note never aborts the whole build.
     """
     corpus_dir = Path(corpus_dir)
     papers: list[Paper] = []
+    skipped = 0
     for md_path in sorted(corpus_dir.glob("*.md")):
         try:
             paper = parse_mirror_note(md_path)
-        except ValueError:
+        except (ValueError, yaml.YAMLError):
+            # ValueError = missing/malformed frontmatter (parse_mirror_note
+            # re-raises yaml.YAMLError as ValueError); yaml.YAMLError kept as a
+            # belt-and-suspenders backstop.
+            skipped += 1
             continue
         if not paper.title and not paper.abstract:
+            skipped += 1
             continue
         papers.append(paper)
+    return papers, skipped
+
+
+def load_corpus(corpus_dir: Path) -> list[Paper]:
+    """Parse every *.md note in corpus_dir (sorted) into Papers. Read-only.
+
+    Files without valid (present and parseable) frontmatter are skipped, as are
+    Papers with neither title nor abstract. See ``load_corpus_reporting`` for
+    the variant that also returns the skip count.
+    """
+    papers, _ = load_corpus_reporting(corpus_dir)
     return papers

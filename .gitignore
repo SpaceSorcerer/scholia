@@ -1,0 +1,15 @@
+.scholia_index/
+# Scratch verification / stress artifacts (not part of the package)
+.scholia_verify_index/
+.scholia_verify_index_build.log
+.scholia_stress_index/
+.scholia_stress_index_minilm/
+.scholia_*.py
+.scholia_*.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/

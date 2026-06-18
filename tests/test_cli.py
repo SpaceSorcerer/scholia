@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -5,6 +7,16 @@ from click.testing import CliRunner
 from scholia.cli import cli
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_python_m_scholia_is_not_a_silent_noop():
+    """`python -m scholia` must invoke the CLI (prints help), not silently exit."""
+    res = subprocess.run(
+        [sys.executable, "-m", "scholia", "--help"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "Scholia" in (res.stdout + res.stderr)
 
 
 def test_index_then_cite_supported(tmp_path):
@@ -93,6 +105,107 @@ def test_cite_dim_mismatch_friendly_message(tmp_path):
     assert "Traceback" not in (res.output or "")
     combined = (res.output or "") + str(res.exception or "")
     assert "dimension mismatch" in combined.lower() or "mismatch" in combined.lower()
+
+
+# --- Item 1: malformed-note skip warning ---
+
+def test_index_warns_on_skipped_malformed_notes(tmp_path):
+    """index over a corpus with a malformed-YAML note still builds and warns."""
+    runner = CliRunner()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "good.md").write_text(
+        (FIXTURES / "corpus" / "paperA.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (corpus / "malformed.md").write_text(
+        (FIXTURES / "corpus" / "paperD_malformed.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    res = runner.invoke(
+        cli,
+        ["index", "--corpus", str(corpus),
+         "--index-dir", str(tmp_path / "idx"), "--fake-embedder"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Indexed 1 papers" in res.output
+    assert "skipped 1 malformed notes" in res.output
+
+
+# --- Item 4: embedder-aware default threshold + adopt stored embedder ---
+
+def test_default_threshold_for_picks_per_embedder():
+    from scholia.cli import default_threshold_for
+    assert default_threshold_for("nomic-ai/nomic-embed-text-v1.5") == 0.73
+    assert default_threshold_for("sentence-transformers/all-MiniLM-L6-v2") == 0.45
+    assert default_threshold_for("FakeEmbedder") == 0.45
+    assert default_threshold_for("some-unknown-model") == 0.45
+    assert default_threshold_for("") == 0.45
+
+
+def test_cite_uses_minilm_default_threshold_in_output(tmp_path):
+    """With a Fake/MiniLM index and no --threshold, the claim-check line shows 0.45."""
+    runner = CliRunner()
+    idx_dir = tmp_path / "idx"
+    runner.invoke(
+        cli,
+        ["index", "--corpus", str(FIXTURES / "corpus"),
+         "--index-dir", str(idx_dir), "--fake-embedder"],
+    )
+    res = runner.invoke(
+        cli,
+        ["cite", "completely unrelated topic", "--index-dir", str(idx_dir),
+         "--fake-embedder"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "0.45" in res.output
+
+
+def test_cite_adopts_stored_embedder_model(tmp_path, monkeypatch):
+    """cite without --model adopts the index's stored embedder_model."""
+    import scholia.cli as cli_mod
+    runner = CliRunner()
+    idx_dir = tmp_path / "idx"
+    runner.invoke(
+        cli,
+        ["index", "--corpus", str(FIXTURES / "corpus"),
+         "--index-dir", str(idx_dir), "--fake-embedder"],
+    )
+
+    captured = {}
+    orig_make = cli_mod._make_embedder
+
+    def _spy(fake, model):
+        captured["model"] = model
+        return orig_make(fake, model)
+
+    monkeypatch.setattr(cli_mod, "_make_embedder", _spy)
+    res = runner.invoke(
+        cli,
+        ["cite", "some passage", "--index-dir", str(idx_dir), "--fake-embedder"],
+    )
+    assert res.exit_code == 0, res.output
+    # The stored embedder_model ("FakeEmbedder") must have been adopted.
+    assert captured["model"] == "FakeEmbedder"
+
+
+def test_cite_explicit_threshold_overrides_default(tmp_path):
+    """An explicit --threshold is honored over the embedder-aware default."""
+    runner = CliRunner()
+    idx_dir = tmp_path / "idx"
+    runner.invoke(
+        cli,
+        ["index", "--corpus", str(FIXTURES / "corpus"),
+         "--index-dir", str(idx_dir), "--fake-embedder"],
+    )
+    res = runner.invoke(
+        cli,
+        ["cite", "unrelated", "--index-dir", str(idx_dir),
+         "--threshold", "0.99", "--fake-embedder"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "0.99" in res.output
+    assert "UNSUPPORTED" in res.output
 
 
 # --- Finding D: env-var defaults ---

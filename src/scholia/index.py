@@ -39,11 +39,25 @@ def _meta_to_paper(d: dict) -> Paper:
 
 
 class ScholiaIndex:
-    """An in-memory FAISS index plus the Papers it indexes, in row order."""
+    """An in-memory FAISS index plus the Papers it indexes, in row order.
 
-    def __init__(self, faiss_index: "faiss.Index", papers: list[Paper]) -> None:
+    ``embedder_model`` / ``dim`` record the embedder used at build time so
+    ``cite`` can adopt the same embedder and pick an embedder-appropriate
+    threshold. Both may be empty/0 for legacy indices built before this was
+    persisted.
+    """
+
+    def __init__(
+        self,
+        faiss_index: "faiss.Index",
+        papers: list[Paper],
+        embedder_model: str = "",
+        dim: int = 0,
+    ) -> None:
         self._index = faiss_index
         self._papers = papers
+        self.embedder_model = embedder_model
+        self.dim = dim
 
     @classmethod
     def load(cls, index_dir: Path) -> "ScholiaIndex":
@@ -56,8 +70,18 @@ class ScholiaIndex:
             )
         faiss_index = faiss.read_index(str(faiss_path))
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        papers = [_meta_to_paper(d) for d in meta]
-        return cls(faiss_index, papers)
+        # New format: {"embedder_model", "dim", "papers": [...]}.
+        # Legacy format: a bare list of paper dicts.
+        if isinstance(meta, dict):
+            paper_dicts = meta.get("papers", [])
+            embedder_model = str(meta.get("embedder_model", ""))
+            dim = int(meta.get("dim", 0) or 0)
+        else:
+            paper_dicts = meta
+            embedder_model = ""
+            dim = 0
+        papers = [_meta_to_paper(d) for d in paper_dicts]
+        return cls(faiss_index, papers, embedder_model, dim)
 
     def search(self, query_vector: np.ndarray, k: int) -> list[tuple[Paper, float]]:
         if len(self._papers) == 0:
@@ -73,6 +97,16 @@ class ScholiaIndex:
         return hits
 
 
+def _embedder_model_name(embedder: Embedder) -> str:
+    """Best-effort identity for the embedder used to build an index.
+
+    NomicEmbedder exposes ``model_name``; FakeEmbedder (test) has none, so we
+    fall back to its class name.
+    """
+    name = getattr(embedder, "model_name", None)
+    return str(name) if name else type(embedder).__name__
+
+
 def build_index(
     papers: list[Paper], embedder: Embedder, index_dir: Path
 ) -> ScholiaIndex:
@@ -82,16 +116,21 @@ def build_index(
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
 
-    vectors = embedder.embed([p.embedding_text for p in papers])
+    vectors = embedder.embed_documents([p.embedding_text for p in papers])
     vectors = np.asarray(vectors, dtype=np.float32)
-    dim = vectors.shape[1]
+    dim = int(vectors.shape[1])
+    embedder_model = _embedder_model_name(embedder)
 
     faiss_index = faiss.IndexFlatIP(dim)
     faiss_index.add(vectors)
 
     faiss.write_index(faiss_index, str(index_dir / _INDEX_FILE))
-    meta = [_paper_to_meta(p) for p in papers]
+    meta = {
+        "embedder_model": embedder_model,
+        "dim": dim,
+        "papers": [_paper_to_meta(p) for p in papers],
+    }
     (index_dir / _META_FILE).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    return ScholiaIndex(faiss_index, papers)
+    return ScholiaIndex(faiss_index, papers, embedder_model, dim)

@@ -41,6 +41,32 @@ the passage is flagged `UNSUPPORTED by your library`.
 Default embedder: `nomic-ai/nomic-embed-text-v1.5` (CPU). Faster fallback:
 `scholia index --model sentence-transformers/all-MiniLM-L6-v2`.
 
+The embedder identity (model name + dimension) is recorded in the index's
+`metadata.json` at build time, so `scholia cite` adopts the same embedder by
+default — you do not need to repeat `--model` (and dimension mismatch is
+prevented by construction).
+
+`nomic-embed-text-v1.5` requires task prefixes: corpus text is embedded as
+`search_document: <text>` and queries as `search_query: <text>`. Scholia applies
+these automatically for nomic models (no-op for MiniLM/other models).
+
+### Claim-check threshold (embedder-aware)
+
+When you do not pass `--threshold`, Scholia picks a default suited to the
+embedder:
+
+| Embedder | Default threshold | Rationale |
+|---|---|---|
+| `all-MiniLM-L6-v2` / FakeEmbedder / unknown | **0.45** | textbook separation (off-domain ≤0.38, on-domain ≥0.54) |
+| `nomic-embed-text-v1.5` | **0.73** | even *with* task prefixes the nomic floor is high; calibrated on the real library, genuine off-domain queries top out ~0.71 and gibberish ~0.61, while on-domain hits sit ≥0.74 |
+
+The nomic default was derived empirically (after the prefix fix) against the
+real 210-document library: off-domain and gibberish queries top out at ~0.71,
+on-domain hits start at ~0.74, so **0.73** cleanly separates them. Empty or
+whitespace-only passages are short-circuited to `UNSUPPORTED` before embedding
+(a blank vector otherwise floats near the corpus centroid and scores ~0.74).
+Override anytime with `--threshold`.
+
 ## Tests
 
 ```bash

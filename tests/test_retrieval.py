@@ -32,3 +32,12 @@ def test_retrieve_default_k(tmp_path):
     idx, emb, _ = _index(tmp_path)
     hits = retrieve("query", emb, idx)  # default k=5, corpus has 3
     assert len(hits) == 3
+
+
+def test_retrieve_empty_passage_returns_no_hits(tmp_path):
+    """An empty/whitespace-only passage carries no claim; return [] (-> UNSUPPORTED)
+    without embedding degenerate text that floats near the corpus centroid."""
+    idx, emb, _ = _index(tmp_path)
+    assert retrieve("", emb, idx) == []
+    assert retrieve("   ", emb, idx) == []
+    assert retrieve("\n\t ", emb, idx) == []

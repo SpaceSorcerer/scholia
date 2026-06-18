@@ -10,11 +10,23 @@ import numpy as np
 
 @runtime_checkable
 class Embedder(Protocol):
-    """Turns texts into L2-normalized float32 vectors of shape (n, dim)."""
+    """Turns texts into L2-normalized float32 vectors of shape (n, dim).
+
+    ``embed_documents`` (corpus side) and ``embed_query`` (query side) let an
+    embedder apply asymmetric task instructions (e.g. nomic-embed-v1.5's
+    ``search_document:`` / ``search_query:`` prefixes). The default behaviour
+    (see ``_DefaultPrefixMixin``) is to fall through to ``embed`` unchanged.
+    """
 
     dim: int
 
     def embed(self, texts: list[str]) -> np.ndarray:
+        ...
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        ...
+
+    def embed_query(self, text: str) -> np.ndarray:
         ...
 
 
@@ -24,7 +36,25 @@ def _l2_normalize(mat: np.ndarray) -> np.ndarray:
     return (mat / norms).astype(np.float32)
 
 
-class FakeEmbedder:
+class _DefaultPrefixMixin:
+    """Default doc/query embedding: no prefixes, just delegate to ``embed``.
+
+    Embedders that need asymmetric instructions (NomicEmbedder) override
+    ``embed_documents`` / ``embed_query``; everyone else (FakeEmbedder, the
+    MiniLM path) inherits this no-op behaviour, so they are unaffected.
+    """
+
+    def embed(self, texts: list[str]) -> np.ndarray:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        return self.embed([text])[0]
+
+
+class FakeEmbedder(_DefaultPrefixMixin):
     """Deterministic hash-based embedder. No model, no RNG. Test-only."""
 
     def __init__(self, dim: int = 16) -> None:
@@ -41,8 +71,21 @@ class FakeEmbedder:
         return _l2_normalize(vecs)
 
 
-class NomicEmbedder:
-    """Real CPU embedder backed by sentence-transformers (loaded lazily)."""
+# nomic-embed-v1.5 is trained to require these task instructions; without them
+# the similarity floor is inflated (an empty string scores ~0.58) and ranking
+# degrades. See https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
+_NOMIC_DOC_PREFIX = "search_document: "
+_NOMIC_QUERY_PREFIX = "search_query: "
+
+
+class NomicEmbedder(_DefaultPrefixMixin):
+    """Real CPU embedder backed by sentence-transformers (loaded lazily).
+
+    For genuine nomic-embed models, ``embed_documents``/``embed_query`` prepend
+    the required ``search_document:``/``search_query:`` task prefixes. For any
+    other model loaded through this class (e.g. all-MiniLM-L6-v2), no prefix is
+    applied and the inherited default (plain ``embed``) is used unchanged.
+    """
 
     def __init__(
         self,
@@ -53,6 +96,10 @@ class NomicEmbedder:
         self.device = device
         self._model = None
         self.dim: int = 0
+
+    @property
+    def _uses_nomic_prefixes(self) -> bool:
+        return "nomic" in self.model_name.lower()
 
     def _load_backend(self):
         # Imported lazily so unit tests never trigger a model download.
@@ -73,3 +120,13 @@ class NomicEmbedder:
             texts, normalize_embeddings=True, convert_to_numpy=True
         )
         return np.asarray(vecs, dtype=np.float32)
+
+    def embed_documents(self, texts: list[str]) -> np.ndarray:
+        if self._uses_nomic_prefixes:
+            texts = [_NOMIC_DOC_PREFIX + t for t in texts]
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> np.ndarray:
+        if self._uses_nomic_prefixes:
+            text = _NOMIC_QUERY_PREFIX + text
+        return self.embed([text])[0]

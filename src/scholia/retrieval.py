@@ -18,7 +18,15 @@ class Hit:
 def retrieve(
     passage: str, embedder: Embedder, index: ScholiaIndex, k: int = 5
 ) -> list[Hit]:
-    """Return up to k Hits for a passage, sorted by descending cosine score."""
-    query_vector = embedder.embed([passage])[0]
+    """Return up to k Hits for a passage, sorted by descending cosine score.
+
+    An empty or whitespace-only passage carries no claim, so it returns ``[]``
+    (claim-check -> UNSUPPORTED). This also avoids embedding degenerate blank
+    text, whose vector floats near the corpus centroid and otherwise produces a
+    spuriously high similarity (a documented nomic false-positive).
+    """
+    if not passage or not passage.strip():
+        return []
+    query_vector = embedder.embed_query(passage)
     results = index.search(query_vector, k)
     return [Hit(paper=p, score=s) for p, s in results]
