@@ -167,8 +167,11 @@ def index(ctx: click.Context, corpus_dir: Path | None, index_dir: Path | None,
               help="FAISS index directory. Overrides SCHOLIA_INDEX_DIR env var.")
 @click.option("--k", default=5, show_default=True, help="Number of papers to return.")
 @click.option("--threshold", default=None, type=float,
-              help="Claim-check cosine threshold. Default is embedder-aware "
-                   "(0.45 for MiniLM/Fake, 0.73 for nomic).")
+              help="Claim-check threshold (overrides the default). SCALE DEPENDS "
+                   "ON RANKING: with --rerank (default) it is the cross-encoder "
+                   "relevance score (default ~0.0 for ms-marco-MiniLM); with "
+                   "--no-rerank it is cosine (0.45 MiniLM/Fake, 0.73 nomic). The "
+                   "'Ranking signal' line shows which scale is live.")
 @click.option("--model", "model_name", default=None,
               help="Embedder model. Default: adopt the index's stored embedder.")
 @click.option("--fake-embedder", is_flag=True)
