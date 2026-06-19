@@ -19,7 +19,12 @@ from scholia.discovery import (
     discover,
 )
 from scholia.embedders import FakeEmbedder, NomicEmbedder
-from scholia.grounding import claim_check, format_citation_suggestions
+from scholia.entailment import FakeEntailmentChecker, MiniCheckEntailmentChecker
+from scholia.grounding import (
+    claim_check,
+    format_citation_suggestions,
+    verified_claim_check,
+)
 from scholia.index import ScholiaIndex, build_index
 from scholia.llm import CloudClaudeLLM, FakeLLM, LLMUnavailable, LocalLLM
 from scholia.models import Paper
@@ -118,6 +123,37 @@ def default_reranker_threshold_for(reranker_model: str) -> float:
     return _DEFAULT_RERANKER_THRESHOLD
 
 
+# Entailment / support-verification defaults. This is an INDEPENDENT check on top
+# of similarity/rerank: it asks whether the top paper's text actually *supports*
+# the claim, not just scores similar. ON by default — warm cost is ~0.26 s/query
+# on CPU (one short seq2seq forward), below the rerank step it follows; the model
+# downloads once (MIT-licensed MiniCheck-Flan-T5-Large), same posture as the
+# embedder.
+#
+# The support score is MiniCheck's supported-probability in [0,1] (grounding, not
+# strict NLI — see entailment.py for why generic NLI was rejected). Calibrated on
+# the REAL 361-paper library (.scholia_entailment_calib.py): genuine support lands
+# ~0.96-0.98, off-topic / wrong-paper ~0.01-0.04. The 0.50 cutoff sits in that
+# ~0.9-wide gap. See the entailment report + README "Verified grounding".
+DEFAULT_ENTAILMENT_MODEL = "lytang/MiniCheck-Flan-T5-Large"
+_MINICHECK_ENTAILMENT_THRESHOLD = 0.50
+_DEFAULT_ENTAILMENT_THRESHOLD = 0.50
+
+
+def default_entailment_threshold_for(entail_model: str) -> float:
+    """Pick an entailment-appropriate default support threshold by model name.
+
+    MiniCheck models emit a supported PROBABILITY in [0,1] with a wide on/off
+    gap -> 0.50 cutoff. Unknown checkers fall back to 0.50. The
+    FakeEntailmentChecker (claim-token recall, scores in [0,1]) is test-only and
+    not in this map; the CLI uses its own default inline.
+    """
+    name = (entail_model or "").lower()
+    if "minicheck" in name:
+        return _MINICHECK_ENTAILMENT_THRESHOLD
+    return _DEFAULT_ENTAILMENT_THRESHOLD
+
+
 # Portable default index directory (~/.scholia/index).
 _DEFAULT_INDEX_DIR = Path.home() / ".scholia" / "index"
 
@@ -138,6 +174,14 @@ def _make_embedder(fake: bool, model_name: str):
 
 def _make_reranker(fake: bool, model_name: str):
     return FakeReranker() if fake else CrossEncoderReranker(model_name=model_name)
+
+
+def _make_entailment_checker(fake: bool, model_name: str, threshold: float):
+    return (
+        FakeEntailmentChecker(threshold=threshold)
+        if fake
+        else MiniCheckEntailmentChecker(model_name=model_name, threshold=threshold)
+    )
 
 
 @click.group()
@@ -210,12 +254,34 @@ def index(ctx: click.Context, corpus_dir: Path | None, index_dir: Path | None,
               help="FAISS candidate pool size fed to the reranker.")
 @click.option("--fake-reranker", is_flag=True,
               help="Use the deterministic test reranker (no model download).")
+@click.option("--verify/--no-verify", "verify_flag", default=True,
+              help="Verify that the top paper's text actually SUPPORTS the claim "
+                   "(textual entailment), not just scores similar. Catches "
+                   "high-similarity-but-doesn't-really-support. ON by default "
+                   "(~0.08s/query CPU); falls back silently if the model can't "
+                   "load. NEVER claims a paper 'contradicts' — only flags "
+                   "non-support.")
+@click.option("--verify-model", "verify_model", default=DEFAULT_ENTAILMENT_MODEL,
+              show_default=True, help="NLI entailment model for support-verification.")
+@click.option("--verify-threshold", "verify_threshold", default=None, type=float,
+              help="Support-verification cutoff (P(entailment), 0-1). "
+                   "Default 0.50 for NLI models.")
+@click.option("--fake-entailment", is_flag=True,
+              help="Use the deterministic test entailment checker (no download).")
 @click.pass_context
 def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
          threshold: float | None, model_name: str | None,
          fake_embedder: bool, rerank_flag: bool, rerank_model: str,
-         candidate_k: int, fake_reranker: bool) -> None:
-    """Print ranked supporting papers for PASSAGE, plus a claim-check line."""
+         candidate_k: int, fake_reranker: bool, verify_flag: bool,
+         verify_model: str, verify_threshold: float | None,
+         fake_entailment: bool) -> None:
+    """Print ranked supporting papers for PASSAGE, plus a claim-check line.
+
+    With --verify (default ON) the top match is also checked for textual SUPPORT
+    of the claim, not just similarity. If retrieval ranks a paper highly but its
+    text does not clearly support the claim, an honest "retrieved but not clearly
+    supported" flag is shown (never a "contradicts" claim).
+    """
     resolved_index_dir = index_dir or _default_index_dir()
 
     try:
@@ -243,6 +309,12 @@ def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
             and src("rerank_model").name == "DEFAULT"
             and src("rerank_flag").name == "DEFAULT"):
         fake_reranker = True
+
+    # Same coherence for the entailment checker: --fake-embedder without an
+    # explicit --verify-model keeps verification fully model-free and offline.
+    if (fake_embedder and not fake_entailment
+            and src("verify_model").name == "DEFAULT"):
+        fake_entailment = True
 
     # --rerank requested: try the cross-encoder path. If the reranker model
     # can't load (offline, missing weights), fall back to the bi-encoder with a
@@ -304,17 +376,71 @@ def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
     signal = "reranked (cross-encoder)" if reranked else "bi-encoder (cosine)"
     click.echo(format_citation_suggestions(passage, hits))
     click.echo(f"\nRanking signal: {signal}")
+
+    # --verify (default): textual support-verification on the TOP hit. The
+    # entailment cutoff: 0.001 for the Fake checker (token-recall, test/offline),
+    # else the model-aware default unless the user overrode --verify-threshold.
+    # If the real model can't load, degrade to the similarity-only verdict with a
+    # one-line notice (mirrors the reranker fallback) — never crash.
+    entail_threshold = (
+        0.001 if fake_entailment
+        else default_entailment_threshold_for(verify_model)
+    )
+    if verify_threshold is not None:
+        entail_threshold = verify_threshold
+
+    verified = None
+    if verify_flag:
+        checker = _make_entailment_checker(
+            fake_entailment, verify_model, entail_threshold
+        )
+        try:
+            verified = verified_claim_check(
+                hits, checker, claim=passage,
+                threshold=resolved_threshold, entail_threshold=entail_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001 - entailment load/scoring failure
+            click.echo(
+                f"Notice: support-verification unavailable "
+                f"({type(exc).__name__}); reporting the similarity verdict only.",
+                err=True,
+            )
+            verified = None
+
     verdict = claim_check(hits, threshold=resolved_threshold)
-    if verdict.supported:
-        click.echo(
-            f"CLAIM-CHECK: SUPPORTED "
-            f"(top={verdict.top_score:.3f} >= {resolved_threshold})"
-        )
+    base_line = (
+        f"(top={verdict.top_score:.3f} >= {resolved_threshold})"
+        if verdict.supported
+        else f"(top={verdict.top_score:.3f} < {resolved_threshold})"
+    )
+
+    if verified is not None and verified.checked:
+        es = verified.entail_score
+        if verified.status == "SUPPORTED":
+            click.echo(
+                f"CLAIM-CHECK: SUPPORTED {base_line} | "
+                f"VERIFIED: top paper supports the claim "
+                f"(support={es:.3f} >= {entail_threshold})"
+            )
+        elif verified.status == "RETRIEVED_NOT_SUPPORTED":
+            click.echo(
+                f"CLAIM-CHECK: SUPPORTED by similarity {base_line}"
+            )
+            click.echo(
+                f"⚠ top match retrieved but the abstract does not clearly "
+                f"support this claim — verify the source "
+                f"(support={es:.3f} < {entail_threshold})."
+            )
+        else:  # UNSUPPORTED
+            click.echo(
+                f"CLAIM-CHECK: UNSUPPORTED by your library {base_line}"
+            )
     else:
-        click.echo(
-            f"CLAIM-CHECK: UNSUPPORTED by your library "
-            f"(top={verdict.top_score:.3f} < {resolved_threshold})"
-        )
+        # Verification off or unavailable: original similarity-only behaviour.
+        if verdict.supported:
+            click.echo(f"CLAIM-CHECK: SUPPORTED {base_line}")
+        else:
+            click.echo(f"CLAIM-CHECK: UNSUPPORTED by your library {base_line}")
 
 
 def _load_library(

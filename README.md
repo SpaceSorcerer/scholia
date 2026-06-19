@@ -65,15 +65,52 @@ automatically — you don't need to repeat `--model`.
 ### Grounding a passage
 
 ```bash
-scholia cite "<passage>"                  # rerank ON by default
+scholia cite "<passage>"                  # rerank + verify ON by default
 scholia cite "<passage>" --k 5            # number of papers to return
 scholia cite "<passage>" --no-rerank      # plain bi-encoder cosine
 scholia cite "<passage>" --candidate-k 50 # widen the rerank pool
+scholia cite "<passage>" --no-verify      # skip the support-verification pass
 ```
 
 Output is a ranked list (first author, year, title, Zotero key, `zotero://` link, DOI),
 a `Ranking signal` line (which scoring scale is live), and a final `CLAIM-CHECK`
 line. Below the active threshold the passage is flagged `UNSUPPORTED by your library`.
+With `--verify` (default ON), the top match is also checked for *textual support* of the
+claim — see **Verified grounding** below.
+
+### Verified grounding (does the paper actually support the claim?)
+
+Retrieval and re-ranking answer *"which library paper is most **similar** to this claim?"* —
+but similarity is not support. A paper can score high on the cross-encoder while its abstract
+doesn't actually *say* what the claim asserts (the classic
+*high-similarity-but-doesn't-really-support* failure). `--verify` (ON by default) adds a second,
+independent pass: it asks a local fact-verification model whether the **top paper's text
+supports the claim**, not just whether it ranks near it.
+
+```bash
+scholia cite "<passage>"                       # verify ON (default)
+scholia cite "<passage>" --no-verify           # similarity verdict only
+scholia cite "<passage>" --verify-threshold 0.6
+scholia cite "<passage>" --verify-model lytang/MiniCheck-Flan-T5-Large
+```
+
+Three outcomes:
+
+- **SUPPORTED** — similarity *and* support agree. The line shows `VERIFIED: top paper supports
+  the claim (support=… ≥ …)`.
+- **⚠ retrieved but not clearly supported** — a paper ranked highly, but its abstract does not
+  clearly support the claim. Scholia prints `top match retrieved but the abstract does not
+  clearly support this claim — verify the source`.
+- **UNSUPPORTED** — nothing cleared the similarity threshold.
+
+**Honest about its limits.** This is deliberately **support-verification only** — it *never*
+claims a paper "contradicts" the claim. Scientific stance detection is error-prone, and a false
+contradiction flag would be worse than useless, so the only failure mode we surface is the
+conservative "verify the source." The model (MiniCheck) checks *literal grounding*: on a
+specialized library, a one-sentence paraphrase often is not stated verbatim in any single
+abstract, so verification **errs toward "not clearly supported" rather than over-claiming**.
+Treat a flag as *"go read the source,"* not as *"this is wrong."* The model runs on CPU, scores
+one short document/claim pair per query (~0.3 s warm), and downloads once on first use.
 
 ### Discovery
 
@@ -136,8 +173,8 @@ export ANTHROPIC_API_KEY=...    # the cloud path reads the key from the environm
 ## How it works
 
 ```
-Zotero mirror  ──▶  embed  ──▶  FAISS (cosine)  ──▶  cross-encoder re-rank  ──▶  claim-check
-   (.md notes)      (bi-encoder)   top-candidate_k        top-k, joint scoring     SUPPORTED?
+Zotero mirror ─▶ embed ─▶ FAISS (cosine) ─▶ cross-encoder re-rank ─▶ claim-check ─▶ verify support
+  (.md notes)   (bi-enc)   top-candidate_k     top-k, joint scoring    SUPPORTED?    (entailment)
 ```
 
 1. **Embed.** Each mirror note (title + abstract) is embedded into a normalized vector. The
@@ -149,6 +186,9 @@ Zotero mirror  ──▶  embed  ──▶  FAISS (cosine)  ──▶  cross-enc
    model can't load.
 4. **Claim-check.** The top score is compared against a scale-appropriate threshold to produce
    the SUPPORTED / UNSUPPORTED verdict.
+5. **Verify support.** (default ON) A local fact-verification model checks whether the top
+   paper's text actually *supports* the claim — catching high-similarity hits whose abstract
+   doesn't really say it. Support-only; never a "contradicts" claim. See **Verified grounding**.
 
 **Local bridge & overlay.** `scholia serve` loads the index and models once and exposes a small
 localhost JSON API (`/health`, `/cite`, `/discover`) so UI clients respond fast without reloading
@@ -159,10 +199,11 @@ Word Online, VS Code, Obsidian), then **Ground** or **Discover**. Results are re
 link to open it directly. If the bridge is not running, the results pane shows a clear message
 ("Can't reach Scholia server — is `scholia serve` running?") instead of crashing.
 
-**Pluggable by design.** Embedder, Reranker, and DiscoverySource are simple `Protocol`s. A
-third-party embedder needs only `dim` and `embed(texts)`; a reranker needs only
-`rerank(query, papers, top_k)`; a discovery source needs only `search(query, limit)`. Swap in
-your own without touching the pipeline.
+**Pluggable by design.** Embedder, Reranker, EntailmentChecker, and DiscoverySource are simple
+`Protocol`s. A third-party embedder needs only `dim` and `embed(texts)`; a reranker needs only
+`rerank(query, papers, top_k)`; an entailment checker needs only `verify(claim, evidence)`; a
+discovery source needs only `search(query, limit)`. Swap in your own without touching the
+pipeline.
 
 ### Bridge API (127.0.0.1 only)
 
@@ -215,11 +256,20 @@ scale is always printed on the `Ranking signal` line; `--threshold` overrides it
 | `cross-encoder/ms-marco-MiniLM-L-6-v2` *(default)* | relevance logit | **0.0** | ~22M params, ~2.2 s/query on CPU. Logit centred at 0: on-domain positive, off-domain negative. |
 | `BAAI/bge-reranker-v2-m3` (`--rerank-model …`) | relevance prob (0–1) | **0.20** | Higher accuracy but ~42 s/query on CPU. |
 
-> **Note:** the meaning of `--threshold` depends on whether re-ranking is on. With re-rank (default)
-> it's a cross-encoder relevance score; with `--no-rerank` it's a cosine similarity. The threshold
-> calibrations above were derived empirically against the real local library.
+**Support verifier (entailment scale — `--verify`, ON by default):**
 
-All weights are Apache-2.0 and download once on first use (local CPU, no cloud).
+| Verifier | Score type | Default | Notes |
+|---|---|---|---|
+| `lytang/MiniCheck-Flan-T5-Large` *(default)* | supported prob (0–1) | **0.50** | MIT-licensed (from Apache-2.0 Flan-T5-Large), ~780M params, ~0.3 s/query warm on CPU. Grounding/fact-verification, not strict NLI. On the real library, genuine support scores ~0.96–0.98 and non-support ~0.01–0.19 — the 0.50 cutoff sits in that gap. Conservative on a specialized library (see **Verified grounding**). |
+
+> **Note:** the meaning of `--threshold` depends on whether re-ranking is on. With re-rank (default)
+> it's a cross-encoder relevance score; with `--no-rerank` it's a cosine similarity. `--verify-threshold`
+> is separate and always on the support-probability scale. The threshold calibrations above were
+> derived empirically against the real local library.
+
+The embedder and reranker weights are Apache-2.0; the support verifier
+(`MiniCheck-Flan-T5-Large`) is MIT-licensed (fine-tuned from Apache-2.0 `google/flan-t5-large`).
+All download once on first use (local CPU, no cloud).
 
 ---
 
@@ -227,7 +277,8 @@ All weights are Apache-2.0 and download once on first use (local CPU, no cloud).
 
 **v0.2.x** — the core is shipped and tested:
 
-- ✅ Local citation/grounding engine (embed → FAISS → cross-encoder re-rank → claim-check)
+- ✅ Local citation/grounding engine (embed → FAISS → cross-encoder re-rank → claim-check → verify support)
+- ✅ Verified grounding — entailment/support check on the top match (honest "verify the source" flag; never "contradicts")
 - ✅ Discovery (Semantic Scholar + PubMed) with library de-dup and validated `--add`
 - ✅ Localhost JSON bridge (`scholia serve`)
 - ✅ Desktop overlay v0 (`scholia overlay`) — clickable DOI/Zotero links, graceful bridge-unreachable errors
@@ -261,5 +312,10 @@ Scholia is released under the **MIT License** (see [`LICENSE`](LICENSE)).
 It depends on [sentence-transformers](https://github.com/UKPLab/sentence-transformers) and
 [transformers](https://github.com/huggingface/transformers), both licensed under the
 **Apache License 2.0**; their NOTICE files and license terms ship with their distribution
-packages. The default and optional model weights (`nomic-embed-text-v1.5`,
-`ms-marco-MiniLM-L-6-v2`, `bge-reranker-v2-m3`) are likewise Apache-2.0.
+packages. The embedder/reranker model weights (`nomic-embed-text-v1.5`,
+`ms-marco-MiniLM-L-6-v2`, `bge-reranker-v2-m3`) are likewise Apache-2.0. The support-verification
+model [`MiniCheck-Flan-T5-Large`](https://huggingface.co/lytang/MiniCheck-Flan-T5-Large) is
+**MIT-licensed** (fine-tuned from Apache-2.0 [`google/flan-t5-large`](https://huggingface.co/google/flan-t5-large));
+see Tang et al., *MiniCheck: Efficient Fact-Checking of LLMs on Grounding Documents* (EMNLP 2024).
+It is loaded via `transformers` (already a dependency) using the model's documented scoring — no
+extra package is required.
