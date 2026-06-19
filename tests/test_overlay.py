@@ -19,8 +19,10 @@ import pytest
 from scholia.overlay import (
     BridgeClient,
     BridgeError,
+    format_bridge_error,
     format_cite_result,
     format_discover_result,
+    render_links_as_html,
 )
 
 # ---------------------------------------------------------------------------
@@ -360,6 +362,86 @@ class TestFormatDiscoverResult:
         text = format_discover_result(_DISCOVER_RESULT)
         # The hint is a CLI command, not a "clicked and added" confirmation
         assert "scholia discover" in text
+
+
+# ---------------------------------------------------------------------------
+# format_bridge_error — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatBridgeError:
+    def test_unreachable_shows_friendly_message(self):
+        exc = BridgeError("Bridge unreachable at http://127.0.0.1:8765/cite: Connection refused")
+        msg = format_bridge_error(exc)
+        assert "Can't reach Scholia server" in msg
+        assert "scholia serve" in msg
+
+    def test_connection_keyword_triggers_friendly_message(self):
+        exc = BridgeError("Bridge unreachable at http://127.0.0.1:8765/health: connection refused")
+        msg = format_bridge_error(exc)
+        assert "Can't reach Scholia server" in msg
+
+    def test_other_bridge_error_shows_error_prefix(self):
+        exc = BridgeError("Bridge returned invalid JSON: ...")
+        msg = format_bridge_error(exc)
+        assert "Error:" in msg
+        assert "invalid JSON" in msg
+
+    def test_generic_exception_shows_error_prefix(self):
+        exc = ValueError("something unexpected")
+        msg = format_bridge_error(exc)
+        assert "Error:" in msg
+        assert "unexpected" in msg
+
+    def test_returns_string(self):
+        assert isinstance(format_bridge_error(BridgeError("oops")), str)
+
+
+# ---------------------------------------------------------------------------
+# render_links_as_html — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRenderLinksAsHtml:
+    def test_doi_url_becomes_anchor(self):
+        text = "DOI: https://doi.org/10.1038/aaa"
+        html = render_links_as_html(text)
+        assert '<a href="https://doi.org/10.1038/aaa">' in html
+
+    def test_zotero_url_becomes_anchor(self):
+        text = "Zotero: zotero://select/library/items/ABCD1234"
+        html = render_links_as_html(text)
+        assert '<a href="zotero://select/library/items/ABCD1234">' in html
+
+    def test_html_special_chars_escaped(self):
+        text = "title: <Some Title> & stuff"
+        html = render_links_as_html(text)
+        assert "&lt;Some Title&gt;" in html
+        assert "&amp;" in html
+        assert "<Some Title>" not in html
+
+    def test_plain_text_no_links_unchanged_content(self):
+        text = "No links here, just plain text."
+        html = render_links_as_html(text)
+        assert "No links here" in html
+        assert "<a href" not in html
+
+    def test_output_wrapped_in_pre(self):
+        html = render_links_as_html("some text")
+        assert html.startswith("<pre")
+        assert "</pre>" in html
+
+    def test_multiple_links_all_linkified(self):
+        text = (
+            "DOI: https://doi.org/10.1038/aaa\n"
+            "Zotero: zotero://select/library/items/XYZ"
+        )
+        html = render_links_as_html(text)
+        assert 'href="https://doi.org/10.1038/aaa"' in html
+        assert 'href="zotero://select/library/items/XYZ"' in html
+
+    def test_returns_string(self):
+        assert isinstance(render_links_as_html("test"), str)
 
 
 # ---------------------------------------------------------------------------

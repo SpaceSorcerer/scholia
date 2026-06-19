@@ -115,7 +115,10 @@ Zotero mirror  ──▶  embed  ──▶  FAISS (cosine)  ──▶  cross-enc
 localhost JSON API (`/health`, `/cite`, `/discover`) so UI clients respond fast without reloading
 models per query. The `scholia overlay` desktop window is a thin client of that bridge: type or
 paste a passage (or click **Ground clipboard** to grab whatever you last copied from any editor —
-Word Online, VS Code, Obsidian), then **Ground** or **Discover**.
+Word Online, VS Code, Obsidian), then **Ground** or **Discover**. Results are rendered with
+**clickable DOI and Zotero links** — click any `https://doi.org/...` or `zotero://select/...`
+link to open it directly. If the bridge is not running, the results pane shows a clear message
+("Can't reach Scholia server — is `scholia serve` running?") instead of crashing.
 
 **Pluggable by design.** Embedder, Reranker, and DiscoverySource are simple `Protocol`s. A
 third-party embedder needs only `dim` and `embed(texts)`; a reranker needs only
@@ -183,7 +186,7 @@ All weights are Apache-2.0 and download once on first use (local CPU, no cloud).
 - ✅ Local citation/grounding engine (embed → FAISS → cross-encoder re-rank → claim-check)
 - ✅ Discovery (Semantic Scholar + PubMed) with library de-dup and validated `--add`
 - ✅ Localhost JSON bridge (`scholia serve`)
-- ✅ Desktop overlay v0 (`scholia overlay`)
+- ✅ Desktop overlay v0 (`scholia overlay`) — clickable DOI/Zotero links, graceful bridge-unreachable errors
 
 **Coming:**
 

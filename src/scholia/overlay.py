@@ -105,6 +105,38 @@ class BridgeClient:
 # Pure display formatters — testable without Qt
 # ---------------------------------------------------------------------------
 
+import html as _html
+
+
+def format_bridge_error(exc: Exception) -> str:
+    """Return a user-facing error string for a BridgeError or unexpected exception."""
+    msg = str(exc)
+    if isinstance(exc, BridgeError) and ("unreachable" in msg or "Connection" in msg.lower()):
+        return "Can't reach Scholia server — is `scholia serve` running?"
+    return f"Error: {msg}"
+
+
+def render_links_as_html(text: str) -> str:
+    """Convert a plain-text result string to HTML with clickable DOI and Zotero links.
+
+    Escapes all HTML, then linkifies ``https://doi.org/...`` and
+    ``zotero://select/...`` URLs.  Output is a ``<pre>``-wrapped block so
+    monospace formatting is preserved.
+    """
+    import re
+    escaped = _html.escape(text)
+    # Match DOI URLs and zotero:// links
+    url_pat = re.compile(
+        r'(https://doi\.org/[^\s<>"]+|zotero://[^\s<>"]+)'
+    )
+
+    def _linkify(m: re.Match) -> str:
+        url = m.group(1)
+        return f'<a href="{url}">{url}</a>'
+
+    linked = url_pat.sub(_linkify, escaped)
+    return f"<pre style='white-space:pre-wrap; font-family:monospace;'>{linked}</pre>"
+
 
 def format_cite_result(result: dict[str, Any]) -> str:
     """Turn a /cite response dict into a human-readable display string."""
@@ -278,11 +310,11 @@ def run_overlay(host: str = "127.0.0.1", port: int = 8765, start_server: bool = 
         QApplication,
         QHBoxLayout,
         QLabel,
-        QMessageBox,
         QPlainTextEdit,
         QPushButton,
         QSizePolicy,
         QSplitter,
+        QTextBrowser,
         QVBoxLayout,
         QWidget,
     )
@@ -380,11 +412,12 @@ def run_overlay(host: str = "127.0.0.1", port: int = 8765, start_server: bool = 
     input_layout.addLayout(btn_row)
     splitter.addWidget(input_widget)
 
-    # --- Results pane ---
-    results_box = QPlainTextEdit()
+    # --- Results pane (QTextBrowser renders HTML with clickable links) ---
+    results_box = QTextBrowser()
     results_box.setReadOnly(True)
+    results_box.setOpenExternalLinks(True)
     results_box.setPlaceholderText("Results appear here…")
-    results_box.setStyleSheet("background: #f9f9f9; font-family: monospace;")
+    results_box.setStyleSheet("background: #f9f9f9;")
     splitter.addWidget(results_box)
     splitter.setSizes([200, 300])
 
@@ -399,25 +432,33 @@ def run_overlay(host: str = "127.0.0.1", port: int = 8765, start_server: bool = 
         btn_discover.setEnabled(not busy)
         btn_clipboard.setEnabled(not busy)
         if busy:
-            results_box.setPlainText("Working…")
+            results_box.setHtml("<pre>Working…</pre>")
 
     def _on_error(msg: str) -> None:
         _set_busy(False)
-        results_box.setPlainText(f"Error:\n{msg}")
+        safe = _html.escape(msg)
+        results_box.setHtml(
+            f"<p style='color:red; font-weight:bold;'>"
+            f"Can't reach Scholia server — is <code>scholia serve</code> running?</p>"
+            f"<pre style='color:gray;'>{safe}</pre>"
+            if "unreachable" in msg.lower() or "connection" in msg.lower()
+            else f"<p style='color:red;'>Error:</p><pre>{safe}</pre>"
+        )
 
     def _run_action(api_fn, formatter):
         passage = text_box.toPlainText().strip()
         if not passage:
-            results_box.setPlainText("Enter a passage first.")
+            results_box.setHtml("<pre>Enter a passage first.</pre>")
             return
         _set_busy(True)
 
         def _call():
             raw = api_fn(passage)
-            return formatter(raw)
+            plain = formatter(raw)
+            return render_links_as_html(plain)
 
         worker = _Worker(_call)
-        worker.finished.connect(lambda txt: (_set_busy(False), results_box.setPlainText(txt)))
+        worker.finished.connect(lambda html: (_set_busy(False), results_box.setHtml(html)))
         worker.error.connect(_on_error)
         _active_worker.clear()
         _active_worker.append(worker)
@@ -433,7 +474,7 @@ def run_overlay(host: str = "127.0.0.1", port: int = 8765, start_server: bool = 
         clipboard = QApplication.clipboard()
         text = clipboard.text(QClipboard.Mode.Clipboard).strip()
         if not text:
-            results_box.setPlainText("Clipboard is empty.")
+            results_box.setHtml("<pre>Clipboard is empty.</pre>")
             return
         text_box.setPlainText(text)
         _ground()
