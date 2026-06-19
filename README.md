@@ -197,11 +197,69 @@ query to scholarly APIs (identical to `scholia discover`), and (b) nothing else.
 No cloud LLM is involved. No authentication is required for a localhost-only
 binding.
 
+## Overlay — always-on-top desktop grounding window
+
+The Scholia overlay is a small, always-on-top desktop window that gives you live
+grounding and discovery over **any editor** (Word Online, VS Code, Obsidian, …)
+via paste or clipboard — no plugin required.
+
+### Install
+
+```bash
+pip install "scholia[overlay]"
+```
+
+PySide6 is an optional extra; the core engine works without it.
+
+### Launch
+
+Start the bridge in one terminal, then the overlay in another:
+
+```bash
+# Terminal 1 — load the index and models once:
+scholia serve --index-dir ~/.scholia/index
+
+# Terminal 2 — open the overlay:
+scholia overlay
+```
+
+Or let the overlay start the bridge automatically:
+
+```bash
+scholia overlay --start-server
+```
+
+Custom bridge location:
+
+```bash
+scholia overlay --host 127.0.0.1 --port 9000
+```
+
+### Workflow
+
+1. **Type or paste** a sentence/passage into the text box, OR
+2. **Copy** text in any editor → click **"Ground clipboard"** in the overlay.
+3. Click **Ground** (or press `Ctrl+Enter`) to check the passage against your library.
+4. Click **Discover** to find papers NOT yet in your library.
+
+**Ground** shows: SUPPORTED / UNSUPPORTED verdict, top score, and the ranked
+matching papers (author, year, title, DOI, Zotero link).
+
+**Discover** shows: candidate papers from Semantic Scholar + PubMed, each with a
+copyable `scholia discover "<passage>" --add <DOI>` hint for validated ingest.
+No Zotero writes happen from the overlay itself (v0).
+
+### Privacy
+
+The overlay is a thin client of the local bridge — it sends passages only to
+`127.0.0.1`. The same privacy guarantees as `scholia serve` apply: only
+discovery's short keyword query ever leaves the machine; your draft never does.
+
 ## Tests
 
 ```bash
 pytest                 # unit tests only (deterministic FakeEmbedder; no download)
-pytest -m integration  # add the real-model end-to-end test (downloads weights)
+pytest -m integration  # add the real-model end-to-end test + GUI smoke test (downloads weights)
 ```
 
 ## Attribution

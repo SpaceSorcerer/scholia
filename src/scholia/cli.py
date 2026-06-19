@@ -513,5 +513,45 @@ def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
         httpd.shutdown()
 
 
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bridge host. Must be 127.0.0.1 (localhost only).")
+@click.option("--port", default=8765, show_default=True, type=int,
+              help="Bridge port.")
+@click.option("--start-server", "start_server", is_flag=True,
+              help="Auto-launch `scholia serve` if the bridge is not running.")
+def overlay(host: str, port: int, start_server: bool) -> None:
+    """Launch the always-on-top desktop overlay (requires PySide6).
+
+    Install the optional extra first:
+
+        pip install "scholia[overlay]"
+
+    Then start the bridge in one terminal and the overlay in another:
+
+        scholia serve
+        scholia overlay
+
+    Or start both at once:
+
+        scholia overlay --start-server
+
+    Workflow: type or paste a passage, then click Ground or Discover.
+    The "Ground clipboard" button grabs whatever you last copied (e.g. from
+    Word Online) and grounds it immediately.  Ctrl+Enter triggers Ground.
+    """
+    try:
+        from scholia.overlay import run_overlay
+    except ImportError:
+        click.echo(
+            "PySide6 is not installed.\n"
+            "Run:  pip install \"scholia[overlay]\"\n"
+            "Then: scholia overlay",
+            err=True,
+        )
+        raise SystemExit(1)
+    run_overlay(host=host, port=port, start_server=start_server)
+
+
 if __name__ == "__main__":  # pragma: no cover - allows `python -m scholia.cli`
     cli()
