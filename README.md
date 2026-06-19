@@ -58,6 +58,7 @@ automatically — you don't need to repeat `--model`.
 | `scholia cite "<passage>"` | Return ranked supporting papers from your library + a claim-check verdict. |
 | `scholia discover "<passage>"` | Find relevant papers **not** in your library (Semantic Scholar + PubMed). |
 | `scholia discover "<passage>" --add <DOI>` | Validate + add a pick via the triple-validating `zotero_ingest.py`. |
+| `scholia suggest "<passage>"` | **Writing partner:** flag gaps — missing topics, where a citation is needed, next angles — grounded in your library. Suggests, never drafts. |
 | `scholia serve` | Start the localhost JSON bridge (loads index + models once). |
 | `scholia overlay [--start-server]` | Launch the always-on-top desktop window (requires the `overlay` extra). |
 
@@ -91,6 +92,44 @@ scholia discover "<passage>" --add 10.1242/jcs.230276
 `--add` shells out to the existing `zotero_ingest.py`, which triple-validates the DOI
 (CrossRef + PubMed), de-dupes against Zotero, and writes the Obsidian mirror note. Re-run
 `scholia index` afterwards so the new paper becomes searchable.
+
+### Writing partner (gap/structure suggestions)
+
+`scholia suggest` helps you see what your draft is **missing** — grounded in your *own*
+library. For a passage it retrieves your most relevant papers, then asks a language model to
+return **structured pointers only** under three headers: *missing-but-library-covered topics*,
+*claims that appear to need a citation*, and *suggested next angles*. Each result is a short
+pointer plus the library papers that support it.
+
+```bash
+scholia suggest "<passage>"                       # local model (default, on-device)
+scholia suggest "<passage>" --backend fake        # deterministic, no model (offline)
+scholia suggest "<passage>" --local-url http://localhost:11434/v1   # e.g. Ollama
+scholia suggest "<passage>" --backend cloud --allow-cloud           # opt-in cloud
+```
+
+**Assist, never ghostwrite (hard rule).** `suggest` *suggests and flags*; it **never writes
+manuscript prose and never rewrites your sentences**. This is enforced in two places: the system
+prompt explicitly instructs the model to *"suggest what to address and which of their papers is
+relevant; do not draft text,"* and Scholia's parser only ever extracts short pointer lines —
+anything that looks like a drafted sentence is dropped, never shown to you. There is no codepath
+that emits drafted text.
+
+**Local by default; cloud is opt-in and off.** Privacy posture for the model that reads your prose:
+
+- **`--backend local` (default)** talks to a local OpenAI-compatible server (LM Studio at
+  `http://localhost:1234/v1`, or Ollama) over the standard library — fully on-device, nothing
+  leaves your machine.
+- **`--backend fake`** is a deterministic, model-free stub for offline/test use.
+- **`--backend cloud`** sends your passage text to **Anthropic** and therefore **requires
+  `--allow-cloud`**. Without that flag it refuses (and explains that this needs your institution's
+  sign-off). When enabled it prints a one-line warning that your prose is leaving the machine. The
+  `anthropic` SDK is an optional extra (`pip install "scholia[cloud]"`), not a core dependency.
+
+```bash
+pip install "scholia[cloud]"   # only needed for --backend cloud
+export ANTHROPIC_API_KEY=...    # the cloud path reads the key from the environment
+```
 
 ---
 
@@ -146,6 +185,11 @@ Scholia is built so your draft stays on your machine:
 - **Discovery sends only a short keyword query — never your draft.** `discover` extracts a focused,
   stopword-filtered key-term string locally (capped at a handful of content words) and sends *only
   that string* to PubMed / Semantic Scholar. The passage itself never leaves the machine.
+- **The writing partner runs on-device by default.** `scholia suggest` uses a **local** model
+  (LM Studio / Ollama) by default, so your prose stays local. The only path that transmits your
+  passage off the machine is `--backend cloud`, which is **opt-in, default-off, and gated behind
+  `--allow-cloud` + a printed warning** — because sending unpublished manuscript text to a cloud
+  provider requires your institution's sign-off.
 - **No cloud LLM is ever contacted**, at any step.
 - **The bridge binds `127.0.0.1` only** — never `0.0.0.0`. Binding elsewhere prints a warning.
 

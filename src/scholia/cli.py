@@ -21,9 +21,11 @@ from scholia.discovery import (
 from scholia.embedders import FakeEmbedder, NomicEmbedder
 from scholia.grounding import claim_check, format_citation_suggestions
 from scholia.index import ScholiaIndex, build_index
+from scholia.llm import CloudClaudeLLM, FakeLLM, LLMUnavailable, LocalLLM
 from scholia.models import Paper
 from scholia.rerank import CrossEncoderReranker, FakeReranker
 from scholia.retrieval import retrieve, retrieve_reranked
+from scholia.writing_partner import format_gap_report, suggest_gaps
 
 # Path to the existing triple-validating ingest tool (do not modify it). The
 # --add path shells out to this so the user's real library is only ever mutated
@@ -35,6 +37,13 @@ DEFAULT_THRESHOLD = 0.45
 
 DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 DEFAULT_CANDIDATE_K = 30
+
+# Writing-partner (LLM) defaults. PRIVACY: local is the default backend; the
+# cloud path (sending the user's prose to Anthropic) is opt-in/off and gated
+# behind --allow-cloud + a printed warning (institutional sign-off required).
+DEFAULT_LOCAL_LLM_URL = "http://localhost:1234/v1"  # LM Studio default
+DEFAULT_CLOUD_MODEL = "claude-opus-4-8"
+DEFAULT_SUGGEST_K = 8
 
 # Embedder-aware default claim-check thresholds (used when the user does not
 # pass --threshold). MiniLM / FakeEmbedder show textbook separation around 0.45
@@ -551,6 +560,102 @@ def overlay(host: str, port: int, start_server: bool) -> None:
         )
         raise SystemExit(1)
     run_overlay(host=host, port=port, start_server=start_server)
+
+
+@cli.command()
+@click.argument("passage")
+@click.option("--index-dir", type=click.Path(path_type=Path), default=None,
+              help="FAISS index directory. Overrides SCHOLIA_INDEX_DIR env var.")
+@click.option("--backend", type=click.Choice(["local", "cloud", "fake"]),
+              default="local", show_default=True,
+              help="Which language model runs the gap analysis. 'local' (DEFAULT) "
+                   "and 'fake' stay fully on-device; 'cloud' sends your prose to "
+                   "Anthropic and REQUIRES --allow-cloud.")
+@click.option("--local-url", default=DEFAULT_LOCAL_LLM_URL, show_default=True,
+              help="Base URL of a local OpenAI-compatible server (LM Studio / "
+                   "Ollama).")
+@click.option("--model", "model_name", default=None,
+              help="LLM name. local -> the served model id; cloud -> a Claude "
+                   "model (default claude-opus-4-8).")
+@click.option("--allow-cloud", is_flag=True,
+              help="REQUIRED to use --backend cloud. Acknowledges that your "
+                   "passage text will be sent to Anthropic (institutional "
+                   "sign-off required).")
+@click.option("--k", default=DEFAULT_SUGGEST_K, show_default=True,
+              help="Number of library papers to retrieve as grounding context.")
+@click.option("--embedder-model", "embedder_model", default=None,
+              help="Embedder model. Default: adopt the index's stored embedder.")
+@click.option("--fake-embedder", is_flag=True,
+              help="Use the deterministic test embedder (no model download).")
+@click.pass_context
+def suggest(ctx: click.Context, passage: str, index_dir: Path | None,
+            backend: str, local_url: str, model_name: str | None,
+            allow_cloud: bool, k: int, embedder_model: str | None,
+            fake_embedder: bool) -> None:
+    """Suggest GAPS in PASSAGE — missing topics, where citations are needed, and
+    next angles — grounded in your own library.
+
+    Scholia SUGGESTS; it never writes manuscript prose or rewrites your
+    sentences. The local + fake backends are fully on-device; the cloud backend
+    sends your prose to Anthropic and is opt-in/off (requires --allow-cloud).
+    """
+    # PRIVACY GATE: cloud is opt-in/off. Refuse --backend cloud without the
+    # explicit --allow-cloud acknowledgement (institutional sign-off required).
+    if backend == "cloud" and not allow_cloud:
+        click.echo(
+            "Refusing --backend cloud without --allow-cloud.\n"
+            "The cloud path sends your unpublished passage text to Anthropic, "
+            "which requires your institution's sign-off. Re-run with "
+            "--allow-cloud to acknowledge, or use the on-device default "
+            "(--backend local).",
+            err=True,
+        )
+        ctx.exit(2)
+        return
+
+    resolved_index_dir = index_dir or _default_index_dir()
+    try:
+        scholia_index = ScholiaIndex.load(resolved_index_dir)
+    except FileNotFoundError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return
+
+    # Adopt the index's stored embedder unless overridden (prevents dim mismatch).
+    resolved_embedder_model = (
+        embedder_model or scholia_index.embedder_model or DEFAULT_MODEL
+    )
+    embedder = _make_embedder(fake_embedder, resolved_embedder_model)
+
+    # Build the chosen backend. Cloud prints a clear one-line privacy warning.
+    if backend == "fake":
+        model = FakeLLM()
+    elif backend == "cloud":
+        click.echo(
+            "WARNING: --backend cloud — your passage text will be SENT TO "
+            "ANTHROPIC (off your machine) for this analysis.",
+            err=True,
+        )
+        model = CloudClaudeLLM(model=model_name or DEFAULT_CLOUD_MODEL)
+    else:  # local (default) — fully on-device
+        model = LocalLLM(base_url=local_url, model=model_name or "local-model")
+
+    try:
+        report = suggest_gaps(passage, scholia_index, embedder, model, k=k)
+    except (AssertionError, ValueError):
+        click.echo(
+            "Embedder/index dimension mismatch — rebuild the index with the "
+            "same embedder (`scholia index`).",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+    except LLMUnavailable as exc:
+        click.echo(f"Language model unavailable: {exc}", err=True)
+        ctx.exit(1)
+        return
+
+    click.echo(format_gap_report(report))
 
 
 if __name__ == "__main__":  # pragma: no cover - allows `python -m scholia.cli`
