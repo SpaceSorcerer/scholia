@@ -1,270 +1,218 @@
-# Scholia Brain — local citation/grounding engine
+# Scholia
 
-Given a passage of draft text, Scholia returns the best-matching papers from
-**your own Zotero library** (via the local literature mirror) with the claim
-each supports, and flags passages your library does not support. 100% local —
-no paper content leaves the machine.
+![CI](https://github.com/SpaceSorcerer/scholia/actions/workflows/ci.yml/badge.svg)
 
-## Install
+**A privacy-first, local citation/grounding engine for scientific writing — grounded in *your own* validated library.**
+
+Scholia is a local-first assistant that checks whether the claims in your scientific writing are actually supported by papers you already trust. Point it at your Zotero literature mirror; it builds an on-device semantic index and, given any passage, returns the best-matching papers from **your library** — each with its Zotero link and DOI — plus a clear SUPPORTED / UNSUPPORTED verdict. It can also *discover* relevant papers you don't yet have, so you can validate and add them. Grounding, indexing, and ranking run 100% on your machine. Scholia never writes your prose, and it cannot invent a citation.
+
+---
+
+## Why Scholia
+
+- **Your library is the engine, not a bolt-on.** Retrieval runs over *your* validated Zotero mirror as the primary corpus — not a generic web index your papers were sprinkled into. What it surfaces is what you've already vetted.
+- **It structurally cannot fabricate a citation.** There is no generative citation path. Scholia only *resolves* a passage to real papers already in your library (or, for discovery, to real records returned by Semantic Scholar / PubMed). It never produces a plausible-looking reference out of thin air.
+- **Grounding is 100% on-device.** Indexing, embedding, re-ranking, and the SUPPORTED/UNSUPPORTED check all run locally. No cloud LLM is ever contacted.
+- **Assist, don't ghostwrite.** Scholia suggests and checks; it never writes sentences for you. You stay the author.
+- **A discovery loop that grows your library.** When a passage isn't supported, discovery finds candidate papers *not yet* in your library and routes adds through your existing triple-validating ingester — so only vetted papers enter.
+- **MIT licensed.**
+
+---
+
+## Quickstart
 
 ```bash
+# 1. Install (Python 3.11+)
 pip install -e .
-```
 
-## Build the index
+# 2. Build the index from your Zotero literature mirror
+scholia index --corpus "/path/to/zotero-mirror"
+#   (or set it once: export SCHOLIA_CORPUS="/path/to/zotero-mirror"  →  scholia index)
 
-```bash
-# Option A — pass paths explicitly:
-scholia index --corpus "/path/to/zotero-mirror" --index-dir "/path/to/index"
-
-# Option B — set env vars once (e.g. in your shell profile):
-export SCHOLIA_CORPUS="/path/to/zotero-mirror"
-export SCHOLIA_INDEX_DIR="/path/to/index"
-scholia index
-```
-
-If neither `--corpus` nor `SCHOLIA_CORPUS` is provided, `scholia index` exits with a helpful error. The default index directory (when `SCHOLIA_INDEX_DIR` is unset) is `~/.scholia/index`.
-
-## Cite-ground a passage
-
-```bash
+# 3. Ground a passage against your library
 scholia cite "QKI controls alternative splicing during cardiomyocyte maturation."
-scholia cite "<passage>" --k 5 --threshold 0.45
+
+# 4. Discover relevant papers you DON'T yet have
+scholia discover "QKI controls alternative splicing during cardiomyocyte maturation."
+
+# 5. (optional) Run the local bridge for fast, stateful UI clients
+scholia serve
+
+# 6. (optional) Always-on-top desktop overlay
+pip install "scholia[overlay]"
+scholia overlay --start-server
 ```
 
-Output: ranked supporting papers (first author, year, title, Zotero key,
-`zotero://` link, DOI) followed by a `CLAIM-CHECK` line. Below the threshold,
-the passage is flagged `UNSUPPORTED by your library`.
+`scholia index` reads `--corpus` (or the `SCHOLIA_CORPUS` env var) and writes a FAISS index +
+metadata sidecar to `--index-dir` (or `SCHOLIA_INDEX_DIR`, defaulting to `~/.scholia/index`).
+The embedder identity is stored in the index, so later commands adopt the same embedder
+automatically — you don't need to repeat `--model`.
 
-## Discovery — find relevant papers *not* in your library
+---
 
-While `cite` grounds a passage in papers you **already have**, `discover` does
-the opposite: it searches public scholarly APIs for relevant papers that are
-**not yet in your library**, so you can validate and add them.
+## Commands
+
+| Command | What it does |
+|---|---|
+| `scholia index --corpus <path>` | Embed your Zotero mirror notes and build the local FAISS index. |
+| `scholia cite "<passage>"` | Return ranked supporting papers from your library + a claim-check verdict. |
+| `scholia discover "<passage>"` | Find relevant papers **not** in your library (Semantic Scholar + PubMed). |
+| `scholia discover "<passage>" --add <DOI>` | Validate + add a pick via the triple-validating `zotero_ingest.py`. |
+| `scholia serve` | Start the localhost JSON bridge (loads index + models once). |
+| `scholia overlay [--start-server]` | Launch the always-on-top desktop window (requires the `overlay` extra). |
+
+### Grounding a passage
 
 ```bash
-scholia discover "QKI controls alternative splicing during cardiomyocyte differentiation."
-scholia discover "<passage>" --limit 8 --corpus "/path/to/zotero-mirror"
-scholia discover "<passage>" --index-dir "/path/to/index"   # dedup against the index
-scholia discover "<passage>" --fake-source                  # offline/deterministic
+scholia cite "<passage>"                  # rerank ON by default
+scholia cite "<passage>" --k 5            # number of papers to return
+scholia cite "<passage>" --no-rerank      # plain bi-encoder cosine
+scholia cite "<passage>" --candidate-k 50 # widen the rerank pool
 ```
 
-It queries **Semantic Scholar** (Academic Graph) and **PubMed** (E-utilities),
-merges and de-dupes the results, drops anything already in your library (matched
-by DOI, or by title when no DOI), and prints the ranked **new** candidates — each
-clearly framed as *not in your library, suggestions only*. Scholia never writes
-prose and never auto-adds; discovery only finds and suggests papers.
+Output is a ranked list (first author, year, title, Zotero key, `zotero://` link, DOI),
+a `Ranking signal` line (which scoring scale is live), and a final `CLAIM-CHECK`
+line. Below the active threshold the passage is flagged `UNSUPPORTED by your library`.
 
-Add a pick (validate first, then add) via the existing triple-validating
-ingester:
+### Discovery
+
+`discover` queries **Semantic Scholar** (Academic Graph) and **PubMed** (E-utilities) via the
+Python standard library only, merges and de-dupes the results, drops anything already in your
+library (matched by DOI, or by title when no DOI), and prints the ranked **new** candidates —
+each clearly framed as *not in your library, suggestions only*. Scholia never auto-adds and
+never writes prose. Use `--fake-source` for an offline/deterministic run.
+
+To add a pick:
 
 ```bash
 scholia discover "<passage>" --add 10.1242/jcs.230276
 ```
 
-`--add` shells out to `zotero_ingest.py`, which triple-validates the DOI
-(CrossRef + PubMed), de-dupes against Zotero, and writes the Obsidian mirror
-note. Re-index afterwards (`scholia index`) so the new paper is searchable.
+`--add` shells out to the existing `zotero_ingest.py`, which triple-validates the DOI
+(CrossRef + PubMed), de-dupes against Zotero, and writes the Obsidian mirror note. Re-run
+`scholia index` afterwards so the new paper becomes searchable.
 
-### Privacy
+---
 
-Only a **short keyword query** ever leaves your machine — never your draft.
-`discover` extracts a focused key-term string locally (stopword-filtered, capped
-at a handful of content words) and sends *only that string* to the search APIs.
-The draft passage itself is never transmitted, and **no cloud LLM is involved**
-at any step. The search backends use the Python standard library (`urllib`)
-only — no extra dependency.
+## How it works
 
-## Models
+```
+Zotero mirror  ──▶  embed  ──▶  FAISS (cosine)  ──▶  cross-encoder re-rank  ──▶  claim-check
+   (.md notes)      (bi-encoder)   top-candidate_k        top-k, joint scoring     SUPPORTED?
+```
 
-Default embedder: `nomic-ai/nomic-embed-text-v1.5` (CPU). Faster fallback:
-`scholia index --model sentence-transformers/all-MiniLM-L6-v2`.
+1. **Embed.** Each mirror note (title + abstract) is embedded into a normalized vector. The
+   nomic model applies `search_document:` / `search_query:` task prefixes automatically.
+2. **Retrieve.** A FAISS inner-product index fetches the top-`candidate_k` candidates by cosine
+   similarity (the fast but coarse bi-encoder stage).
+3. **Re-rank.** A cross-encoder re-scores each `(query, paper)` pair *jointly* — far more
+   discriminative — and returns the top-`k`. On by default; falls back to the bi-encoder if the
+   model can't load.
+4. **Claim-check.** The top score is compared against a scale-appropriate threshold to produce
+   the SUPPORTED / UNSUPPORTED verdict.
 
-The embedder identity (model name + dimension) is recorded in the index's
-`metadata.json` at build time, so `scholia cite` adopts the same embedder by
-default — you do not need to repeat `--model` (and dimension mismatch is
-prevented by construction).
+**Local bridge & overlay.** `scholia serve` loads the index and models once and exposes a small
+localhost JSON API (`/health`, `/cite`, `/discover`) so UI clients respond fast without reloading
+models per query. The `scholia overlay` desktop window is a thin client of that bridge: type or
+paste a passage (or click **Ground clipboard** to grab whatever you last copied from any editor —
+Word Online, VS Code, Obsidian), then **Ground** or **Discover**.
 
-`nomic-embed-text-v1.5` requires task prefixes: corpus text is embedded as
-`search_document: <text>` and queries as `search_query: <text>`. Scholia applies
-these automatically for nomic models (no-op for MiniLM/other models).
+**Pluggable by design.** Embedder, Reranker, and DiscoverySource are simple `Protocol`s. A
+third-party embedder needs only `dim` and `embed(texts)`; a reranker needs only
+`rerank(query, papers, top_k)`; a discovery source needs only `search(query, limit)`. Swap in
+your own without touching the pipeline.
 
-### Claim-check threshold (embedder-aware)
+### Bridge API (127.0.0.1 only)
 
-When you do not pass `--threshold`, Scholia picks a default suited to the
-embedder:
+```
+GET  /health   → {"status":"ok","papers":N,"embedder":"..."}
+POST /cite     → body {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
+POST /discover → body {"passage":str,"limit"?:int}
+```
 
-| Embedder | Default threshold | Rationale |
+---
+
+## Privacy
+
+Scholia is built so your draft stays on your machine:
+
+- **Indexing, retrieval, re-ranking, and grounding are 100% local.** Nothing about a passage you
+  ground is transmitted anywhere.
+- **Models download once, then run offline.** The embedder and cross-encoder weights are fetched
+  from HuggingFace on first use, then run locally on CPU with no further network calls.
+- **Discovery sends only a short keyword query — never your draft.** `discover` extracts a focused,
+  stopword-filtered key-term string locally (capped at a handful of content words) and sends *only
+  that string* to PubMed / Semantic Scholar. The passage itself never leaves the machine.
+- **No cloud LLM is ever contacted**, at any step.
+- **The bridge binds `127.0.0.1` only** — never `0.0.0.0`. Binding elsewhere prints a warning.
+
+---
+
+## Models & thresholds
+
+Because a passage is "supported" when its top match clears a threshold, and different scoring
+stages live on different scales, Scholia picks a scale-appropriate default for you. The active
+scale is always printed on the `Ranking signal` line; `--threshold` overrides it.
+
+**Embedder (bi-encoder, cosine scale — used with `--no-rerank`):**
+
+| Embedder | Default | Notes |
 |---|---|---|
-| `all-MiniLM-L6-v2` / FakeEmbedder / unknown | **0.45** | textbook separation (off-domain ≤0.38, on-domain ≥0.54) |
-| `nomic-embed-text-v1.5` | **0.73** | even *with* task prefixes the nomic floor is high; calibrated on the real library, genuine off-domain queries top out ~0.71 and gibberish ~0.61, while on-domain hits sit ≥0.74 |
+| `nomic-ai/nomic-embed-text-v1.5` *(default)* | **0.73** | High similarity floor even with task prefixes; calibrated so genuine off-domain/gibberish queries stay below and on-domain hits clear it. |
+| `all-MiniLM-L6-v2` (`--model …all-MiniLM-L6-v2`) / Fake / unknown | **0.45** | Textbook separation (off-domain low, on-domain high). |
 
-The nomic default was derived empirically (after the prefix fix) against the
-real 210-document library: off-domain and gibberish queries top out at ~0.71,
-on-domain hits start at ~0.74, so **0.73** cleanly separates them. Empty or
-whitespace-only passages are short-circuited to `UNSUPPORTED` before embedding
-(a blank vector otherwise floats near the corpus centroid and scores ~0.74).
-Override anytime with `--threshold`.
+**Re-ranker (cross-encoder, relevance scale — ON by default):**
 
-## Re-ranking (cross-encoder)
+| Re-ranker | Score type | Default | Notes |
+|---|---|---|---|
+| `cross-encoder/ms-marco-MiniLM-L-6-v2` *(default)* | relevance logit | **0.0** | ~22M params, ~2.2 s/query on CPU. Logit centred at 0: on-domain positive, off-domain negative. |
+| `BAAI/bge-reranker-v2-m3` (`--rerank-model …`) | relevance prob (0–1) | **0.20** | Higher accuracy but ~42 s/query on CPU. |
 
-The bi-encoder embeds the query and each document independently, so its cosine
-margins are tight: on the real 361-paper library the *weakest* genuine
-on-domain hit (0.777) sits only ~0.09 above the *strongest* off-domain hit
-(0.689). A cross-encoder scores each `(query, paper)` pair **jointly**, which is
-far more discriminative. `scholia cite` therefore re-ranks the FAISS top
-`--candidate-k` (default 30) candidates with a cross-encoder and reports the
-re-ranked scores. Re-ranking is **on by default**; pass `--no-rerank` for the
-plain bi-encoder path. If the reranker model cannot load (offline / missing
-weights), `cite` prints a one-line notice and falls back to the bi-encoder.
+> **Note:** the meaning of `--threshold` depends on whether re-ranking is on. With re-rank (default)
+> it's a cross-encoder relevance score; with `--no-rerank` it's a cosine similarity. The threshold
+> calibrations above were derived empirically against the real local library.
 
-```bash
-scholia cite "<passage>"                  # rerank on by default (MiniLM)
-scholia cite "<passage>" --no-rerank       # bi-encoder cosine only
-scholia cite "<passage>" --candidate-k 50  # widen the rerank pool
-scholia cite "<passage>" --rerank-model BAAI/bge-reranker-v2-m3
-```
+All weights are Apache-2.0 and download once on first use (local CPU, no cloud).
 
-Default reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2` (Apache-2.0, ~22 M
-params, ~2.2 s/query on CPU). Higher-accuracy option:
-`BAAI/bge-reranker-v2-m3` (Apache-2.0, but ~42 s/query on CPU). Both download
-once on first use (local CPU only, no cloud — same posture as the embedder).
+---
 
-### Re-rank claim-check threshold (reranker-aware)
+## Status & roadmap
 
-Cross-encoder scores are a **different scale** than cosine, so the
-SUPPORTED/UNSUPPORTED cutoff is re-derived per reranker (empirically, on the
-real 361-paper library):
+**v0.2.x** — the core is shipped and tested:
 
-| Reranker | Score type | On-domain top-1 | Off-domain/gibberish top-1 | Default threshold |
-|---|---|---|---|---|
-| `ms-marco-MiniLM-L-6-v2` | relevance logit | +2.11 … +8.47 | −11.04 … −4.87 | **0.0** |
-| `bge-reranker-v2-m3` | relevance prob (0–1) | 0.439 … 0.999 | 0.001 … 0.038 | **0.20** |
+- ✅ Local citation/grounding engine (embed → FAISS → cross-encoder re-rank → claim-check)
+- ✅ Discovery (Semantic Scholar + PubMed) with library de-dup and validated `--add`
+- ✅ Localhost JSON bridge (`scholia serve`)
+- ✅ Desktop overlay v0 (`scholia overlay`)
 
-The MiniLM cross-encoder widens the genuine-vs-off-domain margin from the
-bi-encoder's **0.089** to **6.98 logits** (~78× wider), with `0.0` sitting
-cleanly in the gap. `--threshold` overrides the reranker-aware default.
+**Coming:**
 
-## Serve / API
+- Live Word-Online capture (ground as you write, no copy/paste round-trip)
+- A gap / structure writing-partner (flag under-supported sections, surface structural gaps)
 
-`scholia serve` loads the index + models **once** at startup and exposes a small
-JSON API over localhost for UI clients (overlay apps, browser extensions, etc.)
-so they get fast, stateful responses without reloading models per query.
+> The overlay GUI is **early (v0)**: a thin, functional always-on-top window driven by the local
+> bridge. It works, but expect rough edges and limited polish.
 
-```bash
-scholia serve --index-dir ./index          # default port 8765
-scholia serve --index-dir ./index --port 9000
-scholia serve --index-dir ./index --no-rerank         # bi-encoder only
-scholia serve --index-dir ./index --fake-embedder --fake-source  # offline/test
-```
-
-### Endpoints (127.0.0.1 only)
-
-**`GET /health`**
-```json
-{"status": "ok", "papers": 210, "embedder": "nomic-ai/nomic-embed-text-v1.5"}
-```
-
-**`POST /cite`** — body: `{"passage": str, "k"?: int, "threshold"?: float, "rerank"?: bool}`
-```json
-{
-  "suggestions": [
-    {"rank": 1, "score": 3.21, "first_author": "Chen", "year": "2021",
-     "title": "QKI regulates...", "zotero_key": "ABCD1234",
-     "zotero_link": "zotero://select/library/items/ABCD1234", "doi": "10.1038/..."}
-  ],
-  "claim_check": {"supported": true, "top_score": 3.21, "threshold": 0.0},
-  "ranking_signal": "reranked (cross-encoder)"
-}
-```
-
-**`POST /discover`** — body: `{"passage": str, "limit"?: int}`
-```json
-{
-  "candidates": [
-    {"title": "...", "authors": ["Smith, J."], "year": "2022",
-     "doi": "10.1234/...", "snippet": "...", "source": "semanticscholar"}
-  ],
-  "query": "QKI RNA binding splicing"
-}
-```
-
-### Privacy
-
-The server **binds 127.0.0.1 only** — never 0.0.0.0. Nothing in your draft
-leaves the machine. The only outbound traffic is (a) discovery's short keyword
-query to scholarly APIs (identical to `scholia discover`), and (b) nothing else.
-No cloud LLM is involved. No authentication is required for a localhost-only
-binding.
-
-## Overlay — always-on-top desktop grounding window
-
-The Scholia overlay is a small, always-on-top desktop window that gives you live
-grounding and discovery over **any editor** (Word Online, VS Code, Obsidian, …)
-via paste or clipboard — no plugin required.
-
-### Install
-
-```bash
-pip install "scholia[overlay]"
-```
-
-PySide6 is an optional extra; the core engine works without it.
-
-### Launch
-
-Start the bridge in one terminal, then the overlay in another:
-
-```bash
-# Terminal 1 — load the index and models once:
-scholia serve --index-dir ~/.scholia/index
-
-# Terminal 2 — open the overlay:
-scholia overlay
-```
-
-Or let the overlay start the bridge automatically:
-
-```bash
-scholia overlay --start-server
-```
-
-Custom bridge location:
-
-```bash
-scholia overlay --host 127.0.0.1 --port 9000
-```
-
-### Workflow
-
-1. **Type or paste** a sentence/passage into the text box, OR
-2. **Copy** text in any editor → click **"Ground clipboard"** in the overlay.
-3. Click **Ground** (or press `Ctrl+Enter`) to check the passage against your library.
-4. Click **Discover** to find papers NOT yet in your library.
-
-**Ground** shows: SUPPORTED / UNSUPPORTED verdict, top score, and the ranked
-matching papers (author, year, title, DOI, Zotero link).
-
-**Discover** shows: candidate papers from Semantic Scholar + PubMed, each with a
-copyable `scholia discover "<passage>" --add <DOI>` hint for validated ingest.
-No Zotero writes happen from the overlay itself (v0).
-
-### Privacy
-
-The overlay is a thin client of the local bridge — it sends passages only to
-`127.0.0.1`. The same privacy guarantees as `scholia serve` apply: only
-discovery's short keyword query ever leaves the machine; your draft never does.
+---
 
 ## Tests
 
 ```bash
-pytest                 # unit tests only (deterministic FakeEmbedder; no download)
-pytest -m integration  # add the real-model end-to-end test + GUI smoke test (downloads weights)
+pytest                 # unit tests only (deterministic FakeEmbedder; no model download)
+pytest -m integration  # real-model end-to-end + GUI smoke tests (downloads weights)
 ```
 
-## Attribution
+The default `pytest` invocation deselects the `integration` marker (configured in
+`pyproject.toml`), so unit tests stay fast and download-free — that's also what CI runs.
 
-Scholia depends on [sentence-transformers](https://github.com/UKPLab/sentence-transformers)
-and [transformers](https://github.com/huggingface/transformers), both licensed under the
-Apache License 2.0. Their respective NOTICE files and license terms are included in their
-distribution packages.
+---
+
+## License & attribution
+
+Scholia is released under the **MIT License** (see [`LICENSE`](LICENSE)).
+
+It depends on [sentence-transformers](https://github.com/UKPLab/sentence-transformers) and
+[transformers](https://github.com/huggingface/transformers), both licensed under the
+**Apache License 2.0**; their NOTICE files and license terms ship with their distribution
+packages. The default and optional model weights (`nomic-embed-text-v1.5`,
+`ms-marco-MiniLM-L-6-v2`, `bge-reranker-v2-m3`) are likewise Apache-2.0.
