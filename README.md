@@ -49,6 +49,13 @@ pip install "scholia[overlay]"
 scholia overlay --start-server
 ```
 
+> **First run downloads models once (~1 GB+), then runs offline.** The first `scholia index`
+> (embedder) and the first `scholia cite` (cross-encoder reranker + MiniCheck verifier) fetch their
+> model weights from HuggingFace — well over 1 GB combined — so the first run can take a few minutes
+> and looks like it's hanging while it downloads. It isn't: after the one-time download the weights
+> are cached and every later run is fully local on CPU with no further network calls. (Add
+> `--fake-embedder` to any command for a model-free offline smoke test.)
+
 `scholia mirror` turns your Zotero library into the markdown corpus Scholia indexes. It fetches
 every citeable item (journal articles, books, preprints, …; attachments and notes are skipped)
 via the **Zotero Web API v3** — **read-only**, using only the standard library — and writes one
@@ -141,7 +148,7 @@ the next `##`); the `## Links` section is for humans and is ignored by the parse
 | `scholia index --corpus <path>` | Embed your Zotero mirror notes and build the local FAISS index. |
 | `scholia cite "<passage>"` | Return ranked supporting papers from your library + a claim-check verdict. |
 | `scholia discover "<passage>"` | Find relevant papers **not** in your library (Semantic Scholar + PubMed). |
-| `scholia discover "<passage>" --add <DOI>` | Validate + add a pick via the triple-validating `zotero_ingest.py`. |
+| `scholia discover "<passage>" --add <DOI>` | Validate + add a pick via **your own** external triple-validating ingester (`SCHOLIA_INGEST_CMD` / `--ingest-cmd`; Scholia ships none). |
 | `scholia suggest "<passage>"` | **Writing partner:** flag gaps — missing topics, where a citation is needed, next angles — grounded in your library. Suggests, never drafts. |
 | `scholia serve` | Start the localhost JSON bridge (loads index + models once). |
 | `scholia overlay [--start-server]` | Launch the always-on-top desktop window (requires the `overlay` extra). |
@@ -229,12 +236,18 @@ never writes prose. Use `--fake-source` for an offline/deterministic run.
 To add a pick:
 
 ```bash
+export SCHOLIA_INGEST_CMD="/path/to/your/ingest_script.py"   # or pass --ingest-cmd
 scholia discover "<passage>" --add 10.1242/jcs.230276
 ```
 
-`--add` shells out to the existing `zotero_ingest.py`, which triple-validates the DOI
-(CrossRef + PubMed), de-dupes against Zotero, and writes the Obsidian mirror note. Re-run
-`scholia index` afterwards so the new paper becomes searchable.
+**`--add` requires your own external ingester — Scholia ships none.** Scholia never mutates your
+library itself; `--add` shells out to a triple-validating ingest tool **you** provide, invoked as
+`<your-ingester> --doi <DOI>`. Point Scholia at it with the `SCHOLIA_INGEST_CMD` environment
+variable or the `--ingest-cmd <path>` option (a `.py` script is run with the current Python
+interpreter; any other path is executed directly). If neither is set, `--add` fails with a clear
+message and adds nothing. Your ingester is expected to validate the DOI (e.g. CrossRef + PubMed),
+de-dupe against your library, and write the note; after a successful add, re-run `scholia index`
+so the new paper becomes searchable.
 
 ### Writing partner (gap/structure suggestions)
 
@@ -306,6 +319,14 @@ Word Online, VS Code, Obsidian), then **Ground** or **Discover**. Results are re
 link to open it directly. If the bridge is not running, the results pane shows a clear message
 ("Can't reach Scholia server — is `scholia serve` running?") instead of crashing.
 
+> **Note — bridge verdict scope.** The `scholia serve` bridge (and therefore the overlay and the
+> browser extension) currently uses the **similarity-only** claim-check (embed → retrieve →
+> re-rank → threshold) for its SUPPORTED / UNSUPPORTED verdict. It does **not** yet run the CLI's
+> extra support-verification pass (`scholia cite --verify`, the MiniCheck grounding check). So a
+> bridge/overlay/extension "SUPPORTED" means *similar enough*, not *textually verified*; for the
+> stronger verified-grounding verdict, use `scholia cite` directly. Wiring entailment into the
+> bridge is a planned follow-up.
+
 **Pluggable by design.** Embedder, Reranker, EntailmentChecker, and DiscoverySource are simple
 `Protocol`s. A third-party embedder needs only `dim` and `embed(texts)`; a reranker needs only
 `rerank(query, papers, top_k)`; an entailment checker needs only `verify(claim, evidence)`; a
@@ -319,6 +340,9 @@ GET  /health   → {"status":"ok","papers":N,"embedder":"..."}
 POST /cite     → body {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
 POST /discover → body {"passage":str,"limit"?:int}
 ```
+
+`POST /cite`'s `claim_check` is **similarity-only** (no entailment pass) — see the bridge
+verdict-scope note above; the CLI's `--verify` grounding check is not wired into the bridge yet.
 
 ---
 
@@ -367,7 +391,7 @@ scale is always printed on the `Ranking signal` line; `--threshold` overrides it
 
 | Verifier | Score type | Default | Notes |
 |---|---|---|---|
-| `lytang/MiniCheck-Flan-T5-Large` *(default)* | supported prob (0–1) | **0.50** | MIT-licensed (from Apache-2.0 Flan-T5-Large), ~780M params, ~0.3 s/query warm on CPU. Grounding/fact-verification, not strict NLI. On the real library, genuine support scores ~0.96–0.98 and non-support ~0.01–0.19 — the 0.50 cutoff sits in that gap. Conservative on a specialized library (see **Verified grounding**). |
+| `lytang/MiniCheck-Flan-T5-Large` *(default)* | supported prob (0–1) | **0.50** | MIT-licensed (from Apache-2.0 Flan-T5-Large), ~780M params, ~0.26 s/query warm on CPU. Grounding/fact-verification, not strict NLI. On the real library, genuine support scores ~0.96–0.98 and non-support ~0.01–0.04 — the 0.50 cutoff sits in that gap. Conservative on a specialized library (see **Verified grounding**). |
 
 > **Note:** the meaning of `--threshold` depends on whether re-ranking is on. With re-rank (default)
 > it's a cross-encoder relevance score; with `--no-rerank` it's a cosine similarity. `--verify-threshold`

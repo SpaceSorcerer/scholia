@@ -228,3 +228,8 @@ the agent cannot log into:
   generates prose and cannot fabricate a citation.
 - Your draft never goes to the cloud. Discovery (run by the bridge) sends only a
   short keyword query, never the passage.
+- **Verdict scope.** The SUPPORTED / UNSUPPORTED verdict shown here is the bridge's
+  **similarity-only** claim-check (embed → re-rank → threshold). It does **not** run
+  the CLI's extra support-verification pass (`scholia cite --verify`, MiniCheck
+  grounding), so "SUPPORTED" means *similar enough*, not *textually verified*. For
+  the stronger verified-grounding verdict, run `scholia cite` in a terminal.

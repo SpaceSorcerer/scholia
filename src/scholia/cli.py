@@ -38,10 +38,12 @@ from scholia.rerank import CrossEncoderReranker, FakeReranker
 from scholia.retrieval import retrieve, retrieve_reranked
 from scholia.writing_partner import format_gap_report, suggest_gaps
 
-# Path to the existing triple-validating ingest tool (do not modify it). The
-# --add path shells out to this so the user's real library is only ever mutated
-# by the vetted ingester, never by Scholia directly.
-_ZOTERO_INGEST = Path(r"E:\Claude\zotero-tools\zotero_ingest.py")
+# Env var pointing at the user's external triple-validating ingest tool. The
+# --add path shells out to THIS so the user's real library is only ever mutated
+# by their own vetted ingester, never by Scholia directly. There is intentionally
+# NO baked-in default path — Scholia ships no ingester. The command is resolved
+# at --add time from --ingest-cmd or SCHOLIA_INGEST_CMD (see _resolve_ingest_cmd).
+_INGEST_CMD_ENV = "SCHOLIA_INGEST_CMD"
 
 DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 DEFAULT_THRESHOLD = 0.45
@@ -369,10 +371,11 @@ def index(ctx: click.Context, corpus_dir: Path | None, index_dir: Path | None,
                    "load. NEVER claims a paper 'contradicts' — only flags "
                    "non-support.")
 @click.option("--verify-model", "verify_model", default=DEFAULT_ENTAILMENT_MODEL,
-              show_default=True, help="NLI entailment model for support-verification.")
+              show_default=True,
+              help="Grounding/entailment verifier model for support-verification.")
 @click.option("--verify-threshold", "verify_threshold", default=None, type=float,
-              help="Support-verification cutoff (P(entailment), 0-1). "
-                   "Default 0.50 for NLI models.")
+              help="Support-verification cutoff (support probability, 0-1). "
+                   "Default 0.50 for the grounding/entailment verifier.")
 @click.option("--fake-entailment", is_flag=True,
               help="Use the deterministic test entailment checker (no download).")
 @click.pass_context
@@ -625,25 +628,31 @@ def _format_candidates(query: str, candidates: list) -> str:
               help="Use the deterministic offline source (tests/offline). No "
                    "network.")
 @click.option("--add", "add_doi", default=None,
-              help="Validate + add this DOI to Zotero via the existing "
-                   "zotero_ingest.py (triple-validates, then adds). Re-index "
-                   "afterwards.")
+              help="Validate + add this DOI to your library via YOUR external "
+                   "triple-validating ingester (set --ingest-cmd or the "
+                   "SCHOLIA_INGEST_CMD env var). Re-index afterwards.")
+@click.option("--ingest-cmd", "ingest_cmd", default=None,
+              help="Path to your external triple-validating ingest script/command "
+                   "used by --add (invoked as `<cmd> --doi <DOI>`). Overrides the "
+                   "SCHOLIA_INGEST_CMD env var. Scholia ships no ingester.")
 @click.pass_context
 def discover_cmd(ctx: click.Context, passage: str, limit: int,
                  corpus_dir: Path | None, index_dir: Path | None,
-                 fake_source: bool, add_doi: str | None) -> None:
+                 fake_source: bool, add_doi: str | None,
+                 ingest_cmd: str | None) -> None:
     """Find relevant papers NOT yet in your library for PASSAGE.
 
     Suggestions only — Scholia never writes prose or auto-adds. Only a short
     keyword query (not your draft) is sent to the search APIs; no cloud LLM is
-    used. Use --add <DOI> to validate + add a pick via zotero_ingest.py.
+    used. Use --add <DOI> to validate + add a pick via your own external
+    triple-validating ingester (set --ingest-cmd or SCHOLIA_INGEST_CMD).
     """
     resolved_corpus = corpus_dir or _default_corpus()
     resolved_index_dir = index_dir or _default_index_dir()
 
     # If --add is given, skip the search entirely and route to the ingester.
     if add_doi:
-        _run_add(ctx, add_doi)
+        _run_add(ctx, add_doi, ingest_cmd)
         return
 
     library = _load_library(resolved_corpus, resolved_index_dir)
@@ -673,19 +682,50 @@ def discover_cmd(ctx: click.Context, passage: str, limit: int,
     )
 
 
-def _run_add(ctx: click.Context, doi: str) -> None:
-    """Shell out to the existing zotero_ingest.py to validate + add a DOI.
+def _resolve_ingest_cmd(ingest_cmd: str | None) -> str | None:
+    """Resolve the external ingester command: --ingest-cmd > SCHOLIA_INGEST_CMD.
 
-    Scholia never mutates Zotero itself: the vetted, triple-validating ingester
-    is the only writer. On success we remind the user to re-index; on failure we
-    surface a clean message (no traceback) and exit non-zero.
+    Returns the resolved command string (a path to an ingest script/executable),
+    or ``None`` when neither source is set. Scholia ships no ingester and bakes
+    in no default path; --add is unavailable until the user points at their own.
     """
-    cmd = [sys.executable, str(_ZOTERO_INGEST), "--doi", doi]
-    click.echo(f"Validating + adding {doi} via zotero_ingest.py …")
+    if ingest_cmd:
+        return ingest_cmd
+    env = os.environ.get(_INGEST_CMD_ENV)
+    return env if env else None
+
+
+def _run_add(ctx: click.Context, doi: str, ingest_cmd: str | None) -> None:
+    """Shell out to the user's external ingester to validate + add a DOI.
+
+    Scholia never mutates Zotero itself: the user's own vetted, triple-validating
+    ingester is the only writer. The command is taken from --ingest-cmd or the
+    SCHOLIA_INGEST_CMD env var; if neither is set we fail with a clear message
+    (Scholia ships no ingester). On success we remind the user to re-index; on
+    failure we surface a clean message (no traceback) and exit non-zero.
+
+    The ingester is invoked as ``<resolved-cmd> --doi <doi>``. A ``.py`` script is
+    run with the current interpreter; anything else is executed directly.
+    """
+    resolved = _resolve_ingest_cmd(ingest_cmd)
+    if not resolved:
+        click.echo(
+            "`--add` needs an external triple-validating ingester; set "
+            f"{_INGEST_CMD_ENV} or pass --ingest-cmd <path>. See README.",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+
+    if resolved.lower().endswith(".py"):
+        cmd = [sys.executable, resolved, "--doi", doi]
+    else:
+        cmd = [resolved, "--doi", doi]
+    click.echo(f"Validating + adding {doi} via the external ingester …")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)
     except OSError as exc:
-        click.echo(f"Could not launch zotero_ingest.py: {exc}", err=True)
+        click.echo(f"Could not launch the external ingester: {exc}", err=True)
         ctx.exit(1)
         return
     if getattr(proc, "stdout", ""):
@@ -694,7 +734,7 @@ def _run_add(ctx: click.Context, doi: str) -> None:
         if getattr(proc, "stderr", ""):
             click.echo(proc.stderr, err=True)
         click.echo(
-            f"Add failed (zotero_ingest.py exited {proc.returncode}). Nothing "
+            f"Add failed (ingester exited {proc.returncode}). Nothing "
             f"was added.",
             err=True,
         )

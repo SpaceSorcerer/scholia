@@ -49,12 +49,22 @@ from typing import Protocol, runtime_checkable
 
 import yaml
 
+from scholia.discovery import _contact_email
+
 # --- Configuration ----------------------------------------------------------
 
 _API_ROOT = "https://api.zotero.org"
 _API_VERSION = "3"
 _PAGE_LIMIT = 100  # Zotero's maximum page size for /items.
-_USER_AGENT = "scholia-mirror/0.1 (local; mailto:gsdewson@utmb.edu)"
+
+
+def _user_agent() -> str:
+    """Build the mirror User-Agent string with the resolved contact email.
+
+    Generic project default unless the user sets SCHOLIA_CONTACT_EMAIL (shared
+    with discovery); never the maintainer's personal address.
+    """
+    return f"scholia-mirror/0.1 (local; mailto:{_contact_email()})"
 
 # Item types that carry citeable scholarship. Everything else returned by the
 # /items endpoint (attachments, standalone notes, annotations) is skipped — it
@@ -134,7 +144,7 @@ class HttpZoteroFetcher:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": _USER_AGENT,
+                "User-Agent": _user_agent(),
                 "Zotero-API-Version": _API_VERSION,
                 "Zotero-API-Key": self._api_key,
             },

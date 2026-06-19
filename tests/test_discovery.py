@@ -12,11 +12,31 @@ from scholia.discovery import (
     Candidate,
     DiscoverySource,
     FakeDiscoverySource,
+    _contact_email,
+    _user_agent,
     build_query,
     dedupe_against_library,
     discover,
 )
 from scholia.models import Paper
+
+
+# --- Contact email (privacy: no personal address shipped) ---
+
+def test_contact_email_default_is_generic_not_personal(monkeypatch):
+    """The shipped default contact is a generic project address, never personal."""
+    monkeypatch.delenv("SCHOLIA_CONTACT_EMAIL", raising=False)
+    email = _contact_email()
+    assert "@" in email
+    assert "utmb" not in email.lower()
+    assert "gsdewson" not in email.lower()
+
+
+def test_contact_email_env_override(monkeypatch):
+    """SCHOLIA_CONTACT_EMAIL overrides the generic default."""
+    monkeypatch.setenv("SCHOLIA_CONTACT_EMAIL", "me@example.org")
+    assert _contact_email() == "me@example.org"
+    assert "me@example.org" in _user_agent()
 
 
 # --- Candidate dataclass ---

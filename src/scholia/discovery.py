@@ -3,13 +3,14 @@
 While writing, Scholia can surface candidate papers from public scholarly search
 APIs (Semantic Scholar Academic Graph + PubMed E-utilities) that are relevant to
 a passage and are **not already in the user's Zotero library**, so they can be
-validated (via the existing ``zotero_ingest.py`` triple-validator) and added.
+validated (via the user's own external triple-validating ingester) and added.
 
 INTEGRITY BOUNDARY
 ------------------
 Discovery only *finds and suggests* papers. It never generates prose, never
 writes a citation into the draft, and never adds anything to Zotero on its own —
-the add path shells out to the existing, triple-validating ``zotero_ingest.py``.
+the add path shells out to the user's own external triple-validating ingester
+(configured via ``--ingest-cmd`` / ``SCHOLIA_INGEST_CMD``; Scholia ships none).
 
 PRIVACY
 -------
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import urllib.error
 import urllib.parse
@@ -37,6 +39,19 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from scholia.models import Paper
+
+# Contact address for API etiquette (NCBI E-utilities asks for one, Semantic
+# Scholar's User-Agent likewise). This is NOT a personal address: it defaults to a
+# generic project value and is overridable via the SCHOLIA_CONTACT_EMAIL env var so
+# a user can advertise their own contact without editing source. Never ship the
+# maintainer's personal email.
+_DEFAULT_CONTACT_EMAIL = "scholia@users.noreply.github.com"
+
+
+def _contact_email() -> str:
+    """Resolve the contact email: SCHOLIA_CONTACT_EMAIL env, else generic default."""
+    env = os.environ.get("SCHOLIA_CONTACT_EMAIL")
+    return env.strip() if env and env.strip() else _DEFAULT_CONTACT_EMAIL
 
 # --- Candidate record -------------------------------------------------------
 
@@ -265,12 +280,14 @@ class FakeDiscoverySource:
 
 # --- Real sources: Semantic Scholar + PubMed (stdlib urllib only) -----------
 
-_USER_AGENT = "scholia-discovery/0.1 (local; mailto:gsdewson@utmb.edu)"
+def _user_agent() -> str:
+    """Build the discovery User-Agent string with the resolved contact email."""
+    return f"scholia-discovery/0.1 (local; mailto:{_contact_email()})"
 
 
 def _http_get_json(url: str, timeout: int = 15) -> dict:
     """GET a URL and parse JSON. Raises DiscoveryUnavailable on any network error."""
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -341,13 +358,15 @@ class PubMedSource:
 
     _ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     _ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
-    _EMAIL = "gsdewson@utmb.edu"
     _TOOL = "scholia-discovery"
     source_name = "pubmed"
 
     def search(self, query: str, limit: int) -> list[Candidate]:
         if not query or limit <= 0:
             return []
+        # NCBI E-utilities etiquette wants a tool + contact email; the email is a
+        # generic project default unless the user sets SCHOLIA_CONTACT_EMAIL.
+        email = _contact_email()
         search_params = urllib.parse.urlencode(
             {
                 "db": "pubmed",
@@ -356,7 +375,7 @@ class PubMedSource:
                 "retmode": "json",
                 "sort": "relevance",
                 "tool": self._TOOL,
-                "email": self._EMAIL,
+                "email": email,
             }
         )
         sdata = _http_get_json(f"{self._ESEARCH}?{search_params}")
@@ -369,7 +388,7 @@ class PubMedSource:
                 "id": ",".join(idlist),
                 "retmode": "json",
                 "tool": self._TOOL,
-                "email": self._EMAIL,
+                "email": email,
             }
         )
         summ = _http_get_json(f"{self._ESUMMARY}?{summary_params}")
