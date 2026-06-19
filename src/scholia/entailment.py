@@ -46,9 +46,11 @@ class EntailmentResult:
     """Outcome of one support-verification.
 
     ``supported`` is the boolean verdict (``score >= threshold``); ``score`` is
-    the model's support/entailment probability in ``[0, 1]`` (for the real NLI
-    checker, ``P(entailment)`` from a softmax over the entailment/neutral/
-    contradiction logits). Higher = the evidence more clearly supports the claim.
+    the model's grounding probability in ``[0, 1]``: for the real checker
+    (MiniCheck-Flan-T5-Large), the supported probability from a softmax over
+    two binary label-token logits ("0" = unsupported, "1" = supported) — a
+    grounding/fact-verification score, not a 3-class NLI output. Higher =
+    the evidence more clearly supports the claim.
     """
 
     supported: bool

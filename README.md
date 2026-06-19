@@ -75,8 +75,8 @@ scholia cite "<passage>" --no-verify      # skip the support-verification pass
 Output is a ranked list (first author, year, title, Zotero key, `zotero://` link, DOI),
 a `Ranking signal` line (which scoring scale is live), and a final `CLAIM-CHECK`
 line. Below the active threshold the passage is flagged `UNSUPPORTED by your library`.
-With `--verify` (default ON), the top match is also checked for *textual support* of the
-claim — see **Verified grounding** below.
+With `--verify` (default ON), all top-k retrieved papers are checked for *textual support*
+of the claim — see **Verified grounding** below.
 
 ### Verified grounding (does the paper actually support the claim?)
 
@@ -84,8 +84,13 @@ Retrieval and re-ranking answer *"which library paper is most **similar** to thi
 but similarity is not support. A paper can score high on the cross-encoder while its abstract
 doesn't actually *say* what the claim asserts (the classic
 *high-similarity-but-doesn't-really-support* failure). `--verify` (ON by default) adds a second,
-independent pass: it asks a local fact-verification model whether the **top paper's text
-supports the claim**, not just whether it ranks near it.
+independent pass: it asks a local fact-verification model whether **any of the top-k retrieved
+papers' text supports the claim**, not just whether they rank near it.
+
+> **Important:** on a specialized personal library, a clean VERIFIED is the exception, not the
+> norm. The ⚠ flag means *"go read the source to confirm"* — it does NOT mean *"this claim is
+> wrong."* A one-sentence paraphrase often is not stated verbatim in any single abstract; the
+> verifier errs toward caution, not false contradiction.
 
 ```bash
 scholia cite "<passage>"                       # verify ON (default)
@@ -96,11 +101,12 @@ scholia cite "<passage>" --verify-model lytang/MiniCheck-Flan-T5-Large
 
 Three outcomes:
 
-- **SUPPORTED** — similarity *and* support agree. The line shows `VERIFIED: top paper supports
-  the claim (support=… ≥ …)`.
-- **⚠ retrieved but not clearly supported** — a paper ranked highly, but its abstract does not
-  clearly support the claim. Scholia prints `top match retrieved but the abstract does not
-  clearly support this claim — verify the source`.
+- **SUPPORTED** — similarity *and* support agree. Example output:
+  `CLAIM-CHECK: SUPPORTED (top=X.XXX >= Y.YYY) | VERIFIED: Author (year) — title supports the claim (best support=X.XXX >= Y.YYY)`
+  (with `(+N more)` appended when multiple papers entail the claim).
+- **⚠ retrieved but not clearly supported** — papers ranked highly by similarity, but none
+  clearly support the claim in text. Scholia prints:
+  `⚠ retrieved N paper(s) but none clearly support this claim — verify the source (best support=X.XXX < Y.YYY).`
 - **UNSUPPORTED** — nothing cleared the similarity threshold.
 
 **Honest about its limits.** This is deliberately **support-verification only** — it *never*
@@ -109,8 +115,8 @@ contradiction flag would be worse than useless, so the only failure mode we surf
 conservative "verify the source." The model (MiniCheck) checks *literal grounding*: on a
 specialized library, a one-sentence paraphrase often is not stated verbatim in any single
 abstract, so verification **errs toward "not clearly supported" rather than over-claiming**.
-Treat a flag as *"go read the source,"* not as *"this is wrong."* The model runs on CPU, scores
-one short document/claim pair per query (~0.3 s warm), and downloads once on first use.
+The model runs on CPU, scoring each of the k retrieved document/claim pairs (~k × 0.26 s warm),
+and downloads once on first use.
 
 ### Discovery
 
@@ -186,9 +192,10 @@ Zotero mirror ─▶ embed ─▶ FAISS (cosine) ─▶ cross-encoder re-rank �
    model can't load.
 4. **Claim-check.** The top score is compared against a scale-appropriate threshold to produce
    the SUPPORTED / UNSUPPORTED verdict.
-5. **Verify support.** (default ON) A local fact-verification model checks whether the top
-   paper's text actually *supports* the claim — catching high-similarity hits whose abstract
-   doesn't really say it. Support-only; never a "contradicts" claim. See **Verified grounding**.
+5. **Verify support.** (default ON) A local fact-verification model checks whether any of
+   the top-k retrieved papers' text actually *supports* the claim — catching cases where
+   high-similarity hits don't really say it. SUPPORTED if any paper entails; flags "verify the
+   source" only when none do. Support-only; never a "contradicts" claim. See **Verified grounding**.
 
 **Local bridge & overlay.** `scholia serve` loads the index and models once and exposes a small
 localhost JSON API (`/health`, `/cite`, `/discover`) so UI clients respond fast without reloading
@@ -278,7 +285,7 @@ All download once on first use (local CPU, no cloud).
 **v0.2.x** — the core is shipped and tested:
 
 - ✅ Local citation/grounding engine (embed → FAISS → cross-encoder re-rank → claim-check → verify support)
-- ✅ Verified grounding — entailment/support check on the top match (honest "verify the source" flag; never "contradicts")
+- ✅ Verified grounding — top-k aggregated entailment/support check (honest "verify the source" flag; never "contradicts")
 - ✅ Discovery (Semantic Scholar + PubMed) with library de-dup and validated `--add`
 - ✅ Localhost JSON bridge (`scholia serve`)
 - ✅ Desktop overlay v0 (`scholia overlay`) — clickable DOI/Zotero links, graceful bridge-unreachable errors
