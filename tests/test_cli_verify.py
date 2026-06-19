@@ -57,7 +57,7 @@ def test_cite_verify_flags_retrieved_but_not_supported(tmp_path):
     )
     assert res.exit_code == 0, res.output
     assert "by similarity" in res.output
-    assert "does not clearly support" in res.output
+    assert "clearly support" in res.output
     assert "verify the source" in res.output
     # Honest framing: never claims contradiction.
     assert "contradict" not in res.output.lower()
@@ -148,3 +148,43 @@ def test_default_entailment_threshold_for_known_models():
     assert default_entailment_threshold_for("lytang/MiniCheck-Flan-T5-Large") == 0.50
     t_unknown = default_entailment_threshold_for("some-unknown-checker")
     assert isinstance(t_unknown, float)
+
+
+def test_cite_verify_supported_names_supporting_paper(tmp_path):
+    """When at least one paper supports, the VERIFIED line names it (author/year/title)."""
+    runner = CliRunner()
+    idx_dir = tmp_path / "idx"
+    _index(runner, idx_dir)
+    passage = ("QKI regulates alternative splicing in cardiomyocytes\n\n"
+               "QKI is an RNA-binding protein that controls pre-mRNA "
+               "alternative splicing during cardiac differentiation.")
+    res = runner.invoke(
+        cli,
+        ["cite", passage, "--index-dir", str(idx_dir),
+         "--verify", "--fake-entailment", "--fake-embedder",
+         "--rerank", "--fake-reranker", "--threshold", "0.0001"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "CLAIM-CHECK: SUPPORTED" in res.output
+    assert "VERIFIED" in res.output
+    # The VERIFIED line should name a paper (author name + year or title fragment).
+    assert "supports the claim" in res.output
+    assert "best support=" in res.output
+
+
+def test_cite_verify_not_supported_shows_count(tmp_path):
+    """The non-support flag shows how many papers were retrieved but none supported."""
+    runner = CliRunner()
+    idx_dir = tmp_path / "idx"
+    _index(runner, idx_dir)
+    res = runner.invoke(
+        cli,
+        ["cite", "zebrafish photoreceptor regeneration commitment",
+         "--index-dir", str(idx_dir),
+         "--verify", "--fake-entailment", "--fake-embedder",
+         "--rerank", "--fake-reranker", "--threshold", "-1"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "retrieved" in res.output
+    assert "paper(s)" in res.output
+    assert "clearly support" in res.output

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from scholia.entailment import EntailmentChecker
 from scholia.models import Paper
@@ -52,20 +52,27 @@ class VerifiedClaimVerdict:
     """A claim-check verdict enriched with a textual support-verification pass.
 
     ``base`` is the similarity/rerank verdict (unchanged from ``claim_check``).
-    The entailment fields describe the second, independent check:
+    The entailment fields describe the second, independent check, now run over
+    **all retrieved hits** (top-k aggregation):
 
     - ``checked``      — whether an entailment pass actually ran (False when
-                          there is no retrieved paper to verify against).
-    - ``entailed``     — the entailment checker's boolean support verdict.
-    - ``entail_score`` — the support probability in ``[0, 1]``.
+                          there are no retrieved papers to verify against).
+    - ``entailed``     — True if ANY of the top-k papers' texts supports the
+                          claim above ``entail_threshold``.
+    - ``entail_score`` — the BEST (highest) support score across all verified
+                          papers (in ``[0, 1]``).
     - ``entail_threshold`` — the cutoff used for ``entailed``.
+    - ``supporting_papers`` — the subset of retrieved papers whose text scored
+                          >= ``entail_threshold``; ordered by descending support
+                          score. Empty when none entail.
 
     ``retrieved_but_not_supported`` is the honest flag this whole layer exists
-    for: retrieval said SUPPORTED, but the top paper's text does not clearly
+    for: retrieval said SUPPORTED, but NONE of the top-k papers' texts clearly
     support the claim. It is NEVER a "contradicts" claim — only "verify the
     source." ``status`` collapses the two checks into one of:
-    ``"SUPPORTED"`` (both agree), ``"RETRIEVED_NOT_SUPPORTED"`` (similarity yes,
-    entailment no), or ``"UNSUPPORTED"`` (similarity no).
+    ``"SUPPORTED"`` (similarity yes AND any paper entails),
+    ``"RETRIEVED_NOT_SUPPORTED"`` (similarity yes, no paper entails), or
+    ``"UNSUPPORTED"`` (similarity no).
     """
 
     base: ClaimVerdict
@@ -73,6 +80,7 @@ class VerifiedClaimVerdict:
     entailed: bool
     entail_score: float
     entail_threshold: float
+    supporting_papers: tuple[Paper, ...] = field(default_factory=tuple)
 
     @property
     def retrieved_but_not_supported(self) -> bool:
@@ -80,8 +88,8 @@ class VerifiedClaimVerdict:
 
     @property
     def supported(self) -> bool:
-        """True only when similarity AND entailment agree (or entailment did not
-        run, in which case we defer to the similarity verdict)."""
+        """True only when similarity AND any top-k paper's entailment agree (or
+        entailment did not run, in which case we defer to the similarity verdict)."""
         if not self.base.supported:
             return False
         if not self.checked:
@@ -104,28 +112,47 @@ def verified_claim_check(
     threshold: float = 0.45,
     entail_threshold: float = 0.5,
 ) -> VerifiedClaimVerdict:
-    """Run the similarity/rerank ``claim_check`` then a textual support check.
+    """Run the similarity/rerank ``claim_check`` then a top-k textual support check.
 
-    The entailment pass verifies the TOP hit only: it asks whether that paper's
-    ``embedding_text`` (title + abstract) actually supports ``claim``, rather than
-    merely scoring similar. When similarity says SUPPORTED but the top paper does
-    not clearly support the claim, ``retrieved_but_not_supported`` is set so the
-    caller can surface the honest "verify the source" flag. When there is no
-    retrieved paper, no entailment pass runs (``checked=False``) and the verdict
-    defers to similarity.
+    Rather than verifying only the single top hit, this aggregates entailment
+    across ALL retrieved hits (up to the ``k`` already fetched). The claim is
+    deemed SUPPORTED if ANY hit's ``embedding_text`` (title + abstract) scores
+    >= ``entail_threshold``. Only when NONE of the top-k papers entail is the
+    honest "retrieved but not clearly supported — verify the source" flag set.
+
+    ``VerifiedClaimVerdict.supporting_papers`` lists the papers (ordered by
+    descending support score) that crossed the threshold, so the caller can
+    show the user which paper actually supports the claim, not just which ranks
+    highest by similarity. When there is no retrieved paper at all, no entailment
+    pass runs (``checked=False``) and the verdict defers to similarity.
     """
     base = claim_check(hits, threshold=threshold)
-    if base.top_paper is None:
+    if not hits:
         return VerifiedClaimVerdict(
             base=base, checked=False, entailed=False,
             entail_score=0.0, entail_threshold=entail_threshold,
+            supporting_papers=(),
         )
-    result = checker.verify(claim, base.top_paper.embedding_text)
-    entailed = result.score >= entail_threshold
+
+    # Verify each hit independently; collect (score, paper) pairs.
+    scored: list[tuple[float, Paper]] = []
+    for hit in hits:
+        result = checker.verify(claim, hit.paper.embedding_text)
+        scored.append((result.score, hit.paper))
+
+    best_score = max(s for s, _ in scored)
+    supporting = sorted(
+        ((s, p) for s, p in scored if s >= entail_threshold),
+        key=lambda x: -x[0],
+    )
+    entailed = len(supporting) > 0
+    supporting_papers = tuple(p for _, p in supporting)
+
     return VerifiedClaimVerdict(
         base=base,
         checked=True,
         entailed=entailed,
-        entail_score=result.score,
+        entail_score=best_score,
         entail_threshold=entail_threshold,
+        supporting_papers=supporting_papers,
     )

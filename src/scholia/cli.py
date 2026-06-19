@@ -154,6 +154,13 @@ def default_entailment_threshold_for(entail_model: str) -> float:
     return _DEFAULT_ENTAILMENT_THRESHOLD
 
 
+def _first_author_cli(paper) -> str:
+    """Extract the first author's last name from a Paper for one-line summaries."""
+    if not paper.authors:
+        return "Unknown"
+    return paper.authors[0].split(",")[0].strip()
+
+
 # Portable default index directory (~/.scholia/index).
 _DEFAULT_INDEX_DIR = Path.home() / ".scholia" / "index"
 
@@ -255,10 +262,11 @@ def index(ctx: click.Context, corpus_dir: Path | None, index_dir: Path | None,
 @click.option("--fake-reranker", is_flag=True,
               help="Use the deterministic test reranker (no model download).")
 @click.option("--verify/--no-verify", "verify_flag", default=True,
-              help="Verify that the top paper's text actually SUPPORTS the claim "
-                   "(textual entailment), not just scores similar. Catches "
-                   "high-similarity-but-doesn't-really-support. ON by default "
-                   "(~0.08s/query CPU); falls back silently if the model can't "
+              help="Verify that at least one of the retrieved papers actually "
+                   "SUPPORTS the claim (textual entailment, aggregated over "
+                   "all top-k hits). Reports SUPPORTED if ANY paper entails; "
+                   "flags 'verify the source' only when NONE do. ON by default "
+                   "(~0.26s/paper CPU); falls back silently if the model can't "
                    "load. NEVER claims a paper 'contradicts' — only flags "
                    "non-support.")
 @click.option("--verify-model", "verify_model", default=DEFAULT_ENTAILMENT_MODEL,
@@ -277,10 +285,11 @@ def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
          fake_entailment: bool) -> None:
     """Print ranked supporting papers for PASSAGE, plus a claim-check line.
 
-    With --verify (default ON) the top match is also checked for textual SUPPORT
-    of the claim, not just similarity. If retrieval ranks a paper highly but its
-    text does not clearly support the claim, an honest "retrieved but not clearly
-    supported" flag is shown (never a "contradicts" claim).
+    With --verify (default ON) ALL retrieved papers are checked for textual
+    SUPPORT of the claim (top-k aggregation). SUPPORTED is reported if ANY of
+    the top-k papers' abstracts support the claim; the honest "retrieved but not
+    clearly supported" flag fires only when NONE do. The output names which
+    paper(s) provided the entailment support. Never emits "contradicts."
     """
     resolved_index_dir = index_dir or _default_index_dir()
 
@@ -417,19 +426,32 @@ def cite(ctx: click.Context, passage: str, index_dir: Path | None, k: int,
     if verified is not None and verified.checked:
         es = verified.entail_score
         if verified.status == "SUPPORTED":
+            # Report which paper(s) provided the entailment support.
+            sup_papers = verified.supporting_papers
+            if sup_papers:
+                first = sup_papers[0]
+                fa = _first_author_cli(first)
+                sup_line = (
+                    f"{fa} ({first.year}) — {first.title[:60]}"
+                    f"{'…' if len(first.title) > 60 else ''}"
+                )
+                if len(sup_papers) > 1:
+                    sup_line += f" (+{len(sup_papers) - 1} more)"
+            else:
+                sup_line = "top paper"
             click.echo(
                 f"CLAIM-CHECK: SUPPORTED {base_line} | "
-                f"VERIFIED: top paper supports the claim "
-                f"(support={es:.3f} >= {entail_threshold})"
+                f"VERIFIED: {sup_line} supports the claim "
+                f"(best support={es:.3f} >= {entail_threshold})"
             )
         elif verified.status == "RETRIEVED_NOT_SUPPORTED":
             click.echo(
                 f"CLAIM-CHECK: SUPPORTED by similarity {base_line}"
             )
             click.echo(
-                f"⚠ top match retrieved but the abstract does not clearly "
-                f"support this claim — verify the source "
-                f"(support={es:.3f} < {entail_threshold})."
+                f"⚠ retrieved {len(hits)} paper(s) but none clearly support "
+                f"this claim — verify the source "
+                f"(best support={es:.3f} < {entail_threshold})."
             )
         else:  # UNSUPPORTED
             click.echo(

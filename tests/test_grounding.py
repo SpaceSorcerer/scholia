@@ -163,3 +163,121 @@ def test_verified_records_entailment_score_and_threshold():
     )
     assert v.entail_score == 1.0
     assert v.entail_threshold == 0.6
+
+
+# --- top-k aggregation: SUPPORTED if ANY of the top-k papers entails ---
+
+
+class _SupportsSecondOnly:
+    """EntailmentChecker stub: only supports when evidence contains 'GOOD'."""
+
+    def verify(self, claim: str, evidence: str) -> EntailmentResult:
+        if "GOOD" in evidence:
+            return EntailmentResult(supported=True, score=0.95)
+        return EntailmentResult(supported=False, score=0.02)
+
+
+def test_topk_supported_when_second_hit_entails():
+    """Top-1 doesn't entail but top-2 does -> claim is SUPPORTED (not flagged)."""
+    miss = _hit(0.90, key="MISS", title="Olive oil diet", abstract="MISS evidence")
+    hit_good = _hit(0.85, key="GOOD", title="QKI splicing", abstract="GOOD abstract")
+    v = verified_claim_check(
+        [miss, hit_good], _SupportsSecondOnly(), claim="QKI splicing",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert v.base.supported is True
+    assert v.entailed is True
+    assert v.status == "SUPPORTED"
+    assert v.retrieved_but_not_supported is False
+
+
+def test_topk_supporting_papers_reports_entailing_paper():
+    """supporting_papers lists only the paper(s) that crossed the threshold."""
+    miss = _hit(0.90, key="MISS", title="Off-topic paper", abstract="MISS evidence")
+    hit_good = _hit(0.85, key="GOOD", title="QKI splicing", abstract="GOOD abstract")
+    v = verified_claim_check(
+        [miss, hit_good], _SupportsSecondOnly(), claim="QKI splicing",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert len(v.supporting_papers) == 1
+    assert v.supporting_papers[0].id == "GOOD"
+
+
+def test_topk_flags_when_no_hit_entails():
+    """None of the top-k papers entail -> RETRIEVED_NOT_SUPPORTED."""
+    hits = [_hit(0.90, key="A"), _hit(0.80, key="B"), _hit(0.70, key="C")]
+    v = verified_claim_check(
+        hits, _NeverSupports(), claim="QKI regulates splicing",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert v.entailed is False
+    assert v.status == "RETRIEVED_NOT_SUPPORTED"
+    assert v.supporting_papers == ()
+
+
+def test_topk_entail_score_is_best_across_all_hits():
+    """entail_score is the BEST (highest) score across all top-k hits, not top-1."""
+    hits = [
+        _hit(0.9, key="A", title="Alpha paper", abstract="ALPHA content"),
+        _hit(0.8, key="B", title="Beta paper", abstract="BETA content"),
+        _hit(0.7, key="C", title="Gamma paper", abstract="GAMMA content"),
+    ]
+
+    class _SupportsBetaOnly:
+        def verify(self, claim: str, evidence: str) -> EntailmentResult:
+            if "BETA" in evidence:
+                return EntailmentResult(supported=True, score=0.92)
+            return EntailmentResult(supported=False, score=0.05)
+
+    v = verified_claim_check(
+        hits, _SupportsBetaOnly(), claim="c",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert v.entail_score == 0.92
+    assert v.entailed is True
+
+
+def test_topk_supporting_papers_ordered_by_descending_score():
+    """When multiple papers entail, supporting_papers is sorted best-first."""
+
+    class _ScoresByKey:
+        _scores = {"HIGH": 0.99, "MED": 0.75, "LOW": 0.10}
+
+        def verify(self, claim: str, evidence: str) -> EntailmentResult:
+            for key, score in self._scores.items():
+                if key in evidence:
+                    return EntailmentResult(supported=score >= 0.5, score=score)
+            return EntailmentResult(supported=False, score=0.0)
+
+    hits = [
+        _hit(0.9, key="HIGH", title="HIGH hit", abstract="HIGH evidence"),
+        _hit(0.85, key="MED", title="MED hit", abstract="MED evidence"),
+        _hit(0.80, key="LOW", title="LOW hit", abstract="LOW evidence"),
+    ]
+    v = verified_claim_check(
+        hits, _ScoresByKey(), claim="c",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    keys = [p.id for p in v.supporting_papers]
+    assert keys == ["HIGH", "MED"]  # LOW (0.10) below threshold; HIGH before MED
+    assert v.entail_score == 0.99
+
+
+def test_topk_single_hit_behaves_same_as_before():
+    """Single-hit path (k=1) remains backward-compatible."""
+    v = verified_claim_check(
+        [_hit(0.80)], _AlwaysSupports(), claim="QKI regulates splicing",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert v.status == "SUPPORTED"
+    assert len(v.supporting_papers) == 1
+
+
+def test_topk_no_hits_returns_unchecked():
+    """Empty hits list -> checked=False, supporting_papers=()."""
+    v = verified_claim_check(
+        [], _AlwaysSupports(), claim="anything",
+        threshold=0.45, entail_threshold=0.5,
+    )
+    assert v.checked is False
+    assert v.supporting_papers == ()
