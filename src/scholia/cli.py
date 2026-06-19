@@ -27,6 +27,12 @@ from scholia.grounding import (
 )
 from scholia.index import ScholiaIndex, build_index
 from scholia.llm import CloudClaudeLLM, FakeLLM, LLMUnavailable, LocalLLM
+from scholia.mirror import (
+    FakeZoteroFetcher,
+    HttpZoteroFetcher,
+    ZoteroUnavailable,
+    write_corpus,
+)
 from scholia.models import Paper
 from scholia.rerank import CrossEncoderReranker, FakeReranker
 from scholia.retrieval import retrieve, retrieve_reranked
@@ -194,6 +200,99 @@ def _make_entailment_checker(fake: bool, model_name: str, threshold: float):
 @click.group()
 def cli() -> None:
     """Scholia Brain — local citation grounding over your Zotero library."""
+
+
+@cli.command()
+@click.option("--user-id", "user_id", default=None,
+              help="Your numeric Zotero user ID (from zotero.org/settings/keys, "
+                   "shown as 'Your userID for use in API calls'). Use this OR "
+                   "--group-id, not both.")
+@click.option("--group-id", "group_id", default=None,
+              help="A Zotero group library's numeric ID (mirror a group instead "
+                   "of your personal library). Use this OR --user-id.")
+@click.option("--api-key", "api_key", default=None,
+              help="A Zotero API key with read access. Defaults to the "
+                   "ZOTERO_API_KEY environment variable. Create one at "
+                   "https://www.zotero.org/settings/keys (read-only is enough).")
+@click.option("--out", "out_dir", type=click.Path(path_type=Path), default=None,
+              help="Corpus output directory (markdown notes). Overrides "
+                   "SCHOLIA_CORPUS; defaults to ~/.scholia/corpus.")
+@click.option("--fake-source", is_flag=True,
+              help="Use the deterministic offline fetcher (tests/offline). No "
+                   "network, no key required.")
+@click.pass_context
+def mirror(ctx: click.Context, user_id: str | None, group_id: str | None,
+           api_key: str | None, out_dir: Path | None,
+           fake_source: bool) -> None:
+    """Build the corpus from YOUR Zotero library via the Zotero Web API.
+
+    Fetches every citeable item in your personal (--user-id) or a group
+    (--group-id) library — READ-ONLY — and writes one markdown note per item, in
+    the exact format `scholia index` consumes. Idempotent (notes are named by
+    Zotero key and overwritten). Your draft never leaves the machine; only the
+    API key + library id reach api.zotero.org. The key is read from --api-key or
+    the ZOTERO_API_KEY env var and is never stored or logged.
+    """
+    resolved_out = out_dir or _default_corpus() or (Path.home() / ".scholia" / "corpus")
+
+    if fake_source:
+        # Offline/deterministic: a tiny fixed library, no network, no key.
+        fetcher = FakeZoteroFetcher(
+            [
+                {"key": "FAKE0001",
+                 "data": {"key": "FAKE0001", "itemType": "journalArticle",
+                          "title": "A fake mirrored paper",
+                          "creators": [{"creatorType": "author",
+                                        "firstName": "Jane", "lastName": "Doe"}],
+                          "date": "2021", "DOI": "10.9999/fake",
+                          "abstractNote": "A deterministic offline abstract.",
+                          "tags": [{"tag": "Fake"}],
+                          "dateAdded": "2021-01-01T00:00:00Z"}},
+            ]
+        )
+    else:
+        resolved_key = api_key or os.environ.get("ZOTERO_API_KEY")
+        if not resolved_key:
+            click.echo(
+                "Error: no Zotero API key. Pass --api-key or set the "
+                "ZOTERO_API_KEY environment variable.\n"
+                "Create a read-only key at https://www.zotero.org/settings/keys",
+                err=True,
+            )
+            ctx.exit(1)
+            return
+        if bool(user_id) == bool(group_id):
+            click.echo(
+                "Error: provide exactly one of --user-id or --group-id.\n"
+                "Your numeric userID is shown at "
+                "https://www.zotero.org/settings/keys",
+                err=True,
+            )
+            ctx.exit(1)
+            return
+        fetcher = HttpZoteroFetcher(
+            api_key=resolved_key, user_id=user_id, group_id=group_id
+        )
+
+    try:
+        written, skipped = write_corpus(fetcher, resolved_out)
+    except ZoteroUnavailable as exc:
+        click.echo(
+            f"Zotero Web API unavailable (offline, bad key, or rate-limited): "
+            f"{exc}",
+            err=True,
+        )
+        ctx.exit(1)
+        return
+
+    if skipped:
+        click.echo(
+            f"(skipped {skipped} non-citeable items: attachments/notes/etc.)"
+        )
+    click.echo(
+        f"Wrote {written} notes -> {resolved_out}; next: "
+        f"scholia index --corpus {resolved_out}"
+    )
 
 
 @cli.command()

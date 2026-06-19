@@ -13,8 +13,15 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 def _extract_abstract(body: str) -> str:
-    """Return the text under '## Abstract' up to the next '##' heading."""
-    m = re.search(r"##\s+Abstract\s*\n(.*?)(?:\n##\s+|\Z)", body, re.DOTALL)
+    """Return the text under '## Abstract' up to the next '##' heading.
+
+    The heading match consumes only the ``## Abstract`` line itself
+    (``[^\\n]*\\n``) — NOT the blank lines after it — so an EMPTY abstract
+    correctly yields "" instead of swallowing the following ``## Links`` section.
+    (A real Zotero item can lack an abstract; ``\\s*\\n`` previously ate the
+    blank body and captured Links.)
+    """
+    m = re.search(r"##\s+Abstract[^\n]*\n(.*?)(?:\n##\s+|\Z)", body, re.DOTALL)
     if not m:
         return ""
     return m.group(1).strip()

@@ -25,23 +25,37 @@ Scholia is a local-first assistant that checks whether the claims in your scient
 # 1. Install (Python 3.11+)
 pip install -e .
 
-# 2. Build the index from your Zotero literature mirror
+# 2. Build your corpus FROM YOUR ZOTERO LIBRARY (Web API, read-only)
+scholia mirror --user-id <your-numeric-id> --api-key <your-zotero-key> --out "/path/to/zotero-mirror"
+#   --api-key also reads the ZOTERO_API_KEY env var. Get an id + read-only key at
+#   https://www.zotero.org/settings/keys . Mirror a group with --group-id instead.
+#   (Already export your library some other way? See "Corpus format" below.)
+
+# 3. Build the index from the corpus
 scholia index --corpus "/path/to/zotero-mirror"
 #   (or set it once: export SCHOLIA_CORPUS="/path/to/zotero-mirror"  →  scholia index)
 
-# 3. Ground a passage against your library
+# 4. Ground a passage against your library
 scholia cite "QKI controls alternative splicing during cardiomyocyte maturation."
 
-# 4. Discover relevant papers you DON'T yet have
+# 5. Discover relevant papers you DON'T yet have
 scholia discover "QKI controls alternative splicing during cardiomyocyte maturation."
 
-# 5. (optional) Run the local bridge for fast, stateful UI clients
+# 6. (optional) Run the local bridge for fast, stateful UI clients
 scholia serve
 
-# 6. (optional) Always-on-top desktop overlay
+# 7. (optional) Always-on-top desktop overlay
 pip install "scholia[overlay]"
 scholia overlay --start-server
 ```
+
+`scholia mirror` turns your Zotero library into the markdown corpus Scholia indexes. It fetches
+every citeable item (journal articles, books, preprints, …; attachments and notes are skipped)
+via the **Zotero Web API v3** — **read-only**, using only the standard library — and writes one
+note per item in the format below. It is idempotent (notes are named by Zotero key and
+overwritten), so re-running refreshes in place. Your API key is read from `--api-key` or the
+`ZOTERO_API_KEY` environment variable and is never stored or logged; only the key and your
+library id reach `api.zotero.org`.
 
 `scholia index` reads `--corpus` (or the `SCHOLIA_CORPUS` env var) and writes a FAISS index +
 metadata sidecar to `--index-dir` (or `SCHOLIA_INDEX_DIR`, defaulting to `~/.scholia/index`).
@@ -50,10 +64,80 @@ automatically — you don't need to repeat `--model`.
 
 ---
 
+## Corpus format
+
+A Scholia corpus is a directory of UTF-8 markdown notes, **one per library item**, named
+`<zotero_key>.md`. `scholia mirror` produces exactly this format, but you don't have to use it —
+if you export your library some other way, produce notes that match this schema and `scholia
+index` will read them. Each note is **YAML frontmatter** (between `---` fences) followed by a
+`# <title>` heading, an `## Abstract` section, and an optional `## Links` section:
+
+```markdown
+---
+title: "QKI is a critical pre-mRNA alternative splicing regulator"
+authors:
+  - "Chen, Xinyun"
+  - "Liu, Ying"
+year: "2021"
+publication: "Nature Communications"
+doi: "10.1038/s41467-020-20327-5"
+item_type: "journalArticle"
+zotero_key: "BP3TYXHJ"
+zotero_link: "zotero://select/library/items/BP3TYXHJ"
+tags:
+  - "Cardiology"
+  - "RNA"
+date_added: "2023-05-04T19:54:06Z"
+---
+
+# QKI is a critical pre-mRNA alternative splicing regulator
+
+## Abstract
+
+The RNA-binding protein QKI belongs to the hnRNP K-homology domain protein family
+and regulates pre-mRNA alternative splicing in cardiomyocyte differentiation.
+
+## Links
+
+- [Open in Zotero](zotero://select/library/items/BP3TYXHJ)
+- [DOI](https://doi.org/10.1038/s41467-020-20327-5)
+```
+
+**Frontmatter fields:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `title` | string | Paper title. |
+| `authors` | list of strings | Each `"Last, First"` (authors then editors; an institution is a single string). |
+| `year` | string | 4-digit publication year (`""` if unknown). |
+| `publication` | string | Journal / venue. |
+| `doi` | string | DOI **without** a `https://doi.org/` prefix. |
+| `item_type` | string | Zotero item type (e.g. `journalArticle`). |
+| `zotero_key` | string | The item's Zotero key — also the filename stem and the note's identity. |
+| `zotero_link` | string | `zotero://select/library/items/<zotero_key>`. |
+| `tags` | list of strings | Zotero tags. |
+| `date_added` | string | ISO-8601 timestamp the item was added. |
+
+**Body:** the title repeats as a `# ` heading; the abstract is the text under `## Abstract` (up to
+the next `##`); the `## Links` section is for humans and is ignored by the parser.
+
+**Notes that matter:**
+
+- **The text Scholia embeds is `title` + `abstract`.** A note with neither is skipped at index
+  time (nothing to ground against).
+- **Emit valid YAML.** Quote string values (titles with `:` / `"` *must* be quoted) — invalid
+  frontmatter makes a note get skipped with a warning. `scholia mirror` uses
+  `yaml.safe_dump(allow_unicode=True)` so its output is always valid; if you hand-roll notes,
+  do the same or quote carefully.
+- **Idempotency / identity is the filename + `zotero_key`.** Re-mirroring overwrites in place.
+
+---
+
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `scholia mirror --user-id <id> --api-key <key>` | Build the corpus from your Zotero library (Web API, read-only). Mirror a group with `--group-id`. |
 | `scholia index --corpus <path>` | Embed your Zotero mirror notes and build the local FAISS index. |
 | `scholia cite "<passage>"` | Return ranked supporting papers from your library + a claim-check verdict. |
 | `scholia discover "<passage>"` | Find relevant papers **not** in your library (Semantic Scholar + PubMed). |
@@ -61,6 +145,22 @@ automatically — you don't need to repeat `--model`.
 | `scholia suggest "<passage>"` | **Writing partner:** flag gaps — missing topics, where a citation is needed, next angles — grounded in your library. Suggests, never drafts. |
 | `scholia serve` | Start the localhost JSON bridge (loads index + models once). |
 | `scholia overlay [--start-server]` | Launch the always-on-top desktop window (requires the `overlay` extra). |
+
+### Building the corpus from Zotero
+
+```bash
+scholia mirror --user-id <id> --api-key <key>           # personal library -> ~/.scholia/corpus
+scholia mirror --user-id <id> --out "/path/to/corpus"   # key from ZOTERO_API_KEY env var
+scholia mirror --group-id <id> --api-key <key>          # a group library instead
+scholia mirror --fake-source --out "/tmp/c"             # offline demo (no key, no network)
+```
+
+Find your numeric **userID** and create a **read-only API key** at
+[zotero.org/settings/keys](https://www.zotero.org/settings/keys). `mirror` pages through the
+whole library (Zotero Web API v3), skips non-citeable items (attachments, standalone notes,
+annotations), and writes one `<zotero_key>.md` note per item to `--out` (or `SCHOLIA_CORPUS`,
+defaulting to `~/.scholia/corpus`). It only ever **GET**s — it never modifies your library — and
+the API key is never written into a note or logged. After mirroring, run `scholia index`.
 
 ### Grounding a passage
 
