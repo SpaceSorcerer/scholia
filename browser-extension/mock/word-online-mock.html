@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <!--
+    word-online-mock.html — a LOCAL stand-in for the Word Online editor used to
+    validate browser-extension/content.js extractText() WITHOUT the real,
+    authenticated app.
+
+    It imitates the structural pattern Word for the web uses: an outer editing
+    surface (div.EditingSurfaceBody[contenteditable]) containing several
+    .Paragraph blocks. This exercises all three capture tiers:
+      (a) selection, (b) surrounding paragraph, (c) whole-region fallback.
+
+    This is NOT a faithful pixel/DOM clone of Word Online — Microsoft's real DOM
+    is obfuscated and changes without notice. It validates the EXTRACTION LOGIC,
+    not the live selectors. See README "Validate the capture logic".
+  -->
+  <head>
+    <meta charset="utf-8" />
+    <title>Word Online (mock)</title>
+    <style>
+      body { font: 15px/1.6 Georgia, serif; margin: 40px; }
+      .EditingSurfaceBody { max-width: 700px; outline: 1px dashed #ccc; padding: 24px; }
+      .Paragraph { margin: 0 0 14px; }
+    </style>
+  </head>
+  <body>
+    <h2>Mock document</h2>
+    <div class="EditingSurfaceBody" aria-label="Document" contenteditable="true" role="textbox">
+      <div class="Paragraph" id="p1">
+        MIAT is a nuclear-retained long non-coding RNA that regulates alternative
+        splicing through interactions with the RNA-binding protein QKI.
+      </div>
+      <div class="Paragraph" id="p2">
+        QKI controls pre-mRNA alternative splicing during cardiomyocyte
+        maturation, and its loss disrupts splicing of cardiac transcripts.
+      </div>
+      <div class="Paragraph" id="p3">
+        Spaceflight induces broad transcriptomic changes including altered
+        alternative splicing in human cells.
+      </div>
+    </div>
+  </body>
+</html>

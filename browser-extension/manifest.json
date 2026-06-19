@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Scholia — Word Online Grounding",
+  "version": "0.1.0",
+  "description": "Ground the text you are writing in Word Online against your own validated Zotero library, via the local Scholia bridge (127.0.0.1:8765). Display-only; no prose generation; no cloud.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "https://*.officeapps.live.com/*",
+    "https://*.office.com/*",
+    "https://word-edit.officeapps.live.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Scholia",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.officeapps.live.com/*",
+        "https://*.office.com/*",
+        "https://word-edit.officeapps.live.com/*"
+      ],
+      "js": ["selectors.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "ground-selection": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Ground the current Word Online selection with Scholia"
+    }
+  }
+}

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scholia</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #57606a;
+        --accent: #1f6feb;
+        --ok: #1a7f37;
+        --bad: #b00020;
+        --border: #d0d7de;
+        --card: #f6f8fa;
+      }
+      * { box-sizing: border-box; }
+      body {
+        width: 380px;
+        margin: 0;
+        font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 { font-size: 14px; margin: 0; }
+      header .v { color: var(--muted); font-size: 11px; }
+      .status { padding: 6px 12px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); }
+      .status.ok { color: var(--ok); }
+      .status.bad { color: var(--bad); }
+      .controls { display: flex; gap: 8px; padding: 10px 12px; }
+      button {
+        flex: 1;
+        padding: 8px 10px;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        background: var(--accent);
+        color: #fff;
+        font: 600 12px/1 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      button.secondary { background: #fff; color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .captured {
+        margin: 0 12px 8px;
+        padding: 6px 8px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        max-height: 56px;
+        overflow: auto;
+        white-space: pre-wrap;
+        display: none;
+      }
+      .verdict {
+        margin: 8px 12px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-weight: 700;
+        font-size: 12px;
+        display: none;
+      }
+      .verdict.supported { background: #dafbe1; color: var(--ok); }
+      .verdict.unsupported { background: #ffebe9; color: var(--bad); }
+      #results { padding: 0 12px 12px; max-height: 360px; overflow: auto; }
+      .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 12px 0 6px; }
+      .paper {
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        margin-bottom: 6px;
+        background: #fff;
+      }
+      .paper .title { font-weight: 600; font-size: 12.5px; }
+      .paper .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+      .paper .links { margin-top: 4px; display: flex; gap: 10px; flex-wrap: wrap; }
+      .paper .links a { color: var(--accent); text-decoration: none; font-size: 11px; }
+      .paper .links a:hover { text-decoration: underline; }
+      .score { float: right; color: var(--muted); font-size: 10.5px; font-weight: 400; }
+      .empty { color: var(--muted); font-size: 12px; padding: 8px 0; }
+      .candidate .src { font-size: 10px; color: var(--muted); }
+      .footer { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10.5px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Scholia</h1>
+      <span class="v" id="ranking-signal"></span>
+    </header>
+    <div class="status" id="status">Checking bridge…</div>
+    <div class="controls">
+      <button id="ground-btn">Ground selection</button>
+      <button id="discover-btn" class="secondary">Discover</button>
+    </div>
+    <div class="captured" id="captured"></div>
+    <div class="verdict" id="verdict"></div>
+    <div id="results">
+      <div class="empty">Select text in Word Online, then click <b>Ground selection</b>.</div>
+    </div>
+    <div class="footer">Display-only · local bridge 127.0.0.1:8765 · no prose, no cloud.</div>
+    <script src="popup.js"></script>
+  </body>
+</html>
