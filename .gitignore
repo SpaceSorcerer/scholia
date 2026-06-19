@@ -13,3 +13,8 @@ venv/
 *.egg-info/
 build/
 dist/
+.scholia_*/
+
+# internal planning artifacts — keep private, not in the public repo
+docs/
+file_map.md
