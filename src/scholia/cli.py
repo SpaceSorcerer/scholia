@@ -750,6 +750,107 @@ def _run_add(ctx: click.Context, doi: str, ingest_cmd: str | None) -> None:
 cli.add_command(discover_cmd, name="discover")
 
 
+def _trust_cert_windows(cert_path: Path) -> tuple[bool, str]:
+    """Install cert_path into the CurrentUser\\Root store silently via Python ssl.
+
+    Uses Python's ``ssl.enum_certificates`` / Windows CryptoAPI through the
+    ``ssl`` stdlib to open the store, then ``certutil -user -addstore Root`` as
+    the actual import tool (Windows inbox, no elevation, no admin required).
+
+    Idempotent: re-importing a cert that is already trusted is safe — certutil
+    deduplicates by thumbprint and exits 0.
+
+    Returns (success, message).  The call is made with
+    ``capture_output=True`` so no extra console windows appear; stdout/stderr
+    are surfaced only on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["certutil", "-user", "-addstore", "Root", str(cert_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        return False, (
+            "certutil not found on PATH. "
+            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            "certutil timed out after 60 s. "
+            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
+        )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout
+        return False, (
+            f"certutil -user -addstore Root failed (rc={result.returncode}): {detail}. "
+            "Fallback: certlm.msc → Trusted Root Certification Authorities → Import "
+            "(see word-addin/SIDELOAD_WORD.md)."
+        )
+    return True, "Certificate installed into CurrentUser\\Root (no admin needed)."
+
+
+@cli.command(name="trust-cert")
+@click.option("--cert", "cert_path", type=click.Path(path_type=Path), default=None,
+              help="Path to the PEM certificate to trust. Defaults to "
+                   "~/.scholia/localhost.crt (auto-generated if missing).")
+@click.pass_context
+def trust_cert(ctx: click.Context, cert_path: Path | None) -> None:
+    """Trust the Scholia localhost certificate in the OS store (one-time setup).
+
+    Ensures the self-signed localhost cert exists (generates it if not), then
+    installs it into the CurrentUser Trusted Root store — no admin elevation
+    required.  Idempotent: safe to re-run if the cert is already trusted.
+
+    Required once before the Word add-in task pane will load without a security
+    warning.  After this, just run `scholia serve --serve-addin` normally.
+    """
+    from scholia.server import generate_localhost_cert
+
+    default_cert_dir = Path.home() / ".scholia"
+    resolved_cert = cert_path or (default_cert_dir / "localhost.crt")
+    resolved_key = default_cert_dir / "localhost.key"
+
+    # (a) Ensure the cert exists — generate if missing.
+    if not resolved_cert.exists() or not resolved_key.exists():
+        click.echo(
+            f"Certificate not found at {resolved_cert}. Generating …"
+        )
+        try:
+            generate_localhost_cert(resolved_cert, resolved_key)
+        except ImportError as exc:
+            click.echo(str(exc), err=True)
+            ctx.exit(1)
+            return
+        click.echo(f"  Generated: {resolved_cert}")
+    else:
+        click.echo(f"Certificate found: {resolved_cert}")
+
+    # (b) Install into CurrentUser\Root (Windows only; no admin).
+    if sys.platform != "win32":
+        click.echo(
+            "Note: automatic cert trust is Windows-only.  On macOS/Linux, add "
+            f"{resolved_cert} to your system trust store manually."
+        )
+        return
+
+    click.echo("Installing into CurrentUser\\Root store …")
+    ok, msg = _trust_cert_windows(resolved_cert)
+    if ok:
+        click.echo(f"  {msg}")
+        click.echo(
+            f"\nDone.  Certificate trusted at:\n  {resolved_cert}\n"
+            "You can now run `scholia serve --serve-addin` and the Word add-in\n"
+            "task pane will load without a security warning."
+        )
+    else:
+        click.echo(f"  ERROR: {msg}", err=True)
+        ctx.exit(1)
+
+
 @cli.command()
 @click.option("--index-dir", type=click.Path(path_type=Path),
               default=None,

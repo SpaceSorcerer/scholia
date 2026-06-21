@@ -55,38 +55,15 @@ Scholia serving on https://127.0.0.1:8765
 The self-signed certificate must be added to Windows' Trusted Root store so your
 browser and Word will not show a security warning when the task pane loads.
 
-**Option A — Automated (recommended):**
+**Double-click `Scholia - Trust Certificate (one time)` on your Desktop** (or run
+`python -m scholia trust-cert` in a terminal).
 
-```
-npx office-addin-dev-certs install
-```
+Done — no admin required.  This is a one-time step; you never need to repeat it.
 
-This generates and installs a trusted localhost certificate via the Office tooling.
-If you already ran `scholia serve --serve-addin` and want to use the cert it
-generated instead, follow Option B.
-
-**Option B — Manual (use Scholia's generated cert):**
-
-1. Open a **Run** dialog (`Win+R`) and type:
-   ```
-   certlm.msc
-   ```
-   This opens the Windows Certificate Manager for the local machine.
-
-2. Navigate to **Trusted Root Certification Authorities → Certificates**.
-
-3. Right-click the folder and choose **All Tasks → Import…**
-
-4. Click **Next**, browse to:
-   ```
-   C:\Users\<your-username>\.scholia\localhost.crt
-   ```
-   Click **Next**, accept all defaults, then **Finish**.
-
-5. You will see a security prompt asking "Do you want to install this certificate?"
-   — click **Yes**.
-
-6. Close the Certificate Manager. The cert is now trusted system-wide.
+> **Fallback (manual):** If the command fails, open a Run dialog (`Win+R`), type
+> `certlm.msc`, navigate to **Trusted Root Certification Authorities → Certificates**,
+> right-click → **All Tasks → Import…**, and browse to
+> `C:\Users\<your-username>\.scholia\localhost.crt`.
 
 **Verify the trust step worked:**
 

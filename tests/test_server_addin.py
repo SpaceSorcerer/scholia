@@ -5,6 +5,7 @@ Covers:
 - serve() with ssl_certfile/ssl_keyfile wraps the socket (smoke test)
 - static-file serving via _is_static_path and _serve_static
 - ServerState.addin_dir field
+- trust-cert CLI command (cert locate/generate + mocked OS-store install)
 - HTTPS /health round-trip (integration, marked to skip by default)
 """
 from __future__ import annotations
@@ -12,13 +13,17 @@ from __future__ import annotations
 import json
 import socket
 import ssl
+import sys
 import threading
 import time
+import unittest.mock
 import urllib.request
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from scholia.cli import cli
 from scholia.corpus import load_corpus
 from scholia.embedders import FakeEmbedder
 from scholia.index import build_index
@@ -394,3 +399,101 @@ def _wait_for_server_https(base: str, ctx: ssl.SSLContext,
         except Exception:
             time.sleep(0.05)
     raise RuntimeError(f"HTTPS server at {base} did not start in {timeout}s")
+
+
+# ---------------------------------------------------------------------------
+# trust-cert CLI command
+# ---------------------------------------------------------------------------
+
+
+class TestTrustCertCommand:
+    """Tests for `scholia trust-cert`.
+
+    The OS-store install step (certutil / CryptoAPI) is mocked so the tests
+    run on any platform without modifying the real certificate store.
+    """
+
+    def test_generates_cert_when_missing(self, tmp_path):
+        """trust-cert generates the cert when it does not yet exist."""
+        runner = CliRunner()
+        cert = tmp_path / "localhost.crt"
+        key = tmp_path / "localhost.key"
+
+        # Mock the OS-store install so we do not touch the real store.
+        with unittest.mock.patch(
+            "scholia.cli._trust_cert_windows",
+            return_value=(True, "mocked install ok"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["trust-cert", "--cert", str(cert)],
+            )
+
+        # On non-Windows the command prints a note and returns 0 without
+        # calling _trust_cert_windows; on Windows it calls the mock.
+        assert result.exit_code == 0, result.output
+        assert cert.exists(), "cert file must have been generated"
+        assert "Generated" in result.output or "found" in result.output.lower()
+
+    def test_uses_existing_cert(self, tmp_path):
+        """trust-cert reuses an existing cert file instead of regenerating."""
+        cert = tmp_path / "localhost.crt"
+        key = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+        mtime_before = cert.stat().st_mtime
+
+        runner = CliRunner()
+        with unittest.mock.patch(
+            "scholia.cli._trust_cert_windows",
+            return_value=(True, "mocked install ok"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["trust-cert", "--cert", str(cert)],
+            )
+
+        assert result.exit_code == 0, result.output
+        # File must not have been overwritten (mtime unchanged).
+        assert cert.stat().st_mtime == mtime_before
+        assert "Certificate found" in result.output
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only path")
+    def test_windows_install_called(self, tmp_path):
+        """On Windows, _trust_cert_windows is invoked with the cert path."""
+        cert = tmp_path / "localhost.crt"
+        key = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+
+        runner = CliRunner()
+        with unittest.mock.patch(
+            "scholia.cli._trust_cert_windows",
+            return_value=(True, "mocked install ok"),
+        ) as mock_install:
+            result = runner.invoke(
+                cli,
+                ["trust-cert", "--cert", str(cert)],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_install.assert_called_once_with(cert)
+        assert "mocked install ok" in result.output
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only path")
+    def test_windows_install_failure_exits_nonzero(self, tmp_path):
+        """A failing _trust_cert_windows causes exit code 1."""
+        cert = tmp_path / "localhost.crt"
+        key = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+
+        runner = CliRunner()
+        with unittest.mock.patch(
+            "scholia.cli._trust_cert_windows",
+            return_value=(False, "certutil exploded"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["trust-cert", "--cert", str(cert)],
+            )
+
+        assert result.exit_code != 0
+        assert "certutil exploded" in result.output
