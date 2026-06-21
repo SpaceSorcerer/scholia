@@ -34,7 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-overlay = ["PySide6>=6.5"]
+overlay = ["PySide6>=6.5", "pynput>=1.7"]
 # Cloud writing-partner backend ONLY. NOT a core dependency: the local + fake
 # LLM backends need no SDK. `anthropic` is MIT-licensed; it is imported lazily
 # inside CloudClaudeLLM.complete(), and the cloud path is opt-in/off (gated at

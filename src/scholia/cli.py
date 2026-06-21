@@ -1025,6 +1025,37 @@ def overlay(host: str, port: int, start_server: bool) -> None:
     run_overlay(host=host, port=port, start_server=start_server)
 
 
+@cli.command(name="app")
+@click.option("--index-dir", type=click.Path(path_type=Path),
+              default=None,
+              help="FAISS index directory. Overrides SCHOLIA_INDEX_DIR env var.")
+def app_cmd(index_dir: Path | None) -> None:
+    """Launch the Scholia desktop app (system tray + results panel + Ctrl+Alt+G hotkey).
+
+    Loads the index in-process — no separate ``scholia serve`` window needed.
+    Requires PySide6 and pynput:
+
+        pip install "scholia[overlay]"
+        pip install pynput
+
+    The app runs in the system tray.  Press Ctrl+Alt+G from any app to ground
+    whatever text is selected (or copied) and pop the results panel.  Double-click
+    the tray icon to re-open the panel.
+    """
+    try:
+        from scholia.app import run_app
+    except ImportError as exc:
+        click.echo(
+            f"Could not import scholia.app: {exc}\n"
+            "Run: pip install \"scholia[overlay]\" && pip install pynput",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    resolved_index_dir = index_dir or _default_index_dir()
+    run_app(index_dir=resolved_index_dir)
+
+
 @cli.command()
 @click.argument("passage")
 @click.option("--index-dir", type=click.Path(path_type=Path), default=None,
