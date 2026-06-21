@@ -26,9 +26,13 @@ within 10-30 seconds (ML model load; cached after first use).
 
 Run: `.\build.ps1 -PyInstaller`
 
-Output: `dist/Scholia/Scholia.exe` + support tree (~1.5-2 GB total).
-The `.exe` is self-contained (no Python required) but too large for GitHub release assets.
-Suitable for local use or enterprise distribution via network share.
+Output: `dist/Scholia/Scholia.exe` + support tree.
+**VERIFIED 2026-06-21:** builds successfully (23,660 files, ~1.86 GB total; the
+`Scholia.exe` bootloader is 86 MB, the rest is torch + ML deps). PE subsystem is
+GUI (2) = no console window. Smoke-tested: the exe launches the tray app and
+stays running with no crash. Self-contained (no Python required) but too large
+for GitHub release assets — suitable for local use or enterprise distribution
+via network share.
 
 ---
 
