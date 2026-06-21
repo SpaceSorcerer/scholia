@@ -37,3 +37,10 @@ launchers/Scholia - Discover Clipboard.bat
 launchers/Scholia - Start Bridge.bat
 START_HERE.md
 QUICKSTART_TESTING.md
+
+# Packaging outputs — commit only the build config, not the binaries
+dist/
+build/
+*.exe
+*.msi
+installer/scholia.ico

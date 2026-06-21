@@ -386,14 +386,10 @@ def run_app(index_dir: Path | None = None) -> None:
         QScrollArea,
         QSizePolicy,
         QSystemTrayIcon,
+        QTextBrowser,
         QVBoxLayout,
         QWidget,
     )
-    from PySide6.QtGui import QTextBrowser
-    try:
-        from PySide6.QtWidgets import QTextBrowser as _TB  # noqa: F401
-    except ImportError:
-        pass
 
     resolved_index_dir = index_dir or (Path.home() / ".scholia" / "index")
 
