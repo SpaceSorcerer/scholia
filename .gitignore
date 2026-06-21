@@ -44,3 +44,4 @@ build/
 *.exe
 *.msi
 installer/scholia.ico
+pyinstaller_build.log
