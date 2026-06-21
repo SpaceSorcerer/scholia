@@ -18,3 +18,22 @@ dist/
 # internal planning artifacts — keep private, not in the public repo
 docs/
 file_map.md
+
+# Scholia localhost TLS certificates — generated per-machine, never committed
+*.crt
+*.key
+*.pem
+# Scratch smoke/spike scripts
+_smoke_https.py
+_gen_icons.py
+_test_cert.crt
+_test_key.key
+# Bridge stdout/stderr capture files
+serve_stdout.txt
+serve_stderr.txt
+# Desktop/personal launchers (user-local, not committed)
+launchers/Scholia - Ground Clipboard.bat
+launchers/Scholia - Discover Clipboard.bat
+launchers/Scholia - Start Bridge.bat
+START_HERE.md
+QUICKSTART_TESTING.md

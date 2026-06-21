@@ -1,0 +1,187 @@
+/* =========================================================
+   Scholia task-pane stylesheet
+   Designed for the Office.js task pane (320 px wide, any height).
+   Uses system fonts and Office-safe colors; no external CDN.
+   ========================================================= */
+
+:root {
+  --color-primary:    #1a73e8;
+  --color-secondary:  #5f6368;
+  --color-surface:    #ffffff;
+  --color-bg:         #f8f9fa;
+  --color-border:     #dadce0;
+  --color-text:       #202124;
+  --color-text-muted: #5f6368;
+  --color-success:    #188038;
+  --color-warn:       #b06000;
+  --color-error:      #c5221f;
+  --radius:           6px;
+  --shadow:           0 1px 3px rgba(0,0,0,.12);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Header ---- */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 8px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+}
+.logo { flex-shrink: 0; }
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-primary);
+  margin-right: auto;
+}
+.tagline {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  width: 100%;
+  padding-left: 32px;
+  margin-top: -4px;
+}
+
+/* ---- Main ---- */
+.main {
+  flex: 1;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---- Buttons ---- */
+.actions { display: flex; gap: 8px; }
+.btn {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary  { background: var(--color-primary); color: #fff; }
+.btn-primary:hover:not(:disabled)  { background: #1558b0; }
+.btn-secondary { background: #e8f0fe; color: var(--color-primary); border: 1px solid #c5d5f5; }
+.btn-secondary:hover:not(:disabled) { background: #d2e3fc; }
+
+/* ---- Banner ---- */
+.banner {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+.banner.info    { background: #e8f0fe; border-color: #c5d5f5; color: #1558b0; }
+.banner.error   { background: #fce8e6; border-color: #f5c6c4; color: var(--color-error); }
+.banner.loading { background: var(--color-bg); border-color: var(--color-border); color: var(--color-text-muted); }
+.hidden { display: none !important; }
+
+/* ---- Verdict badge ---- */
+.verdict-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.verdict-supported   { background: #e6f4ea; color: var(--color-success); }
+.verdict-unsupported { background: #fef7e0; color: var(--color-warn); }
+
+/* ---- Results ---- */
+.results { display: flex; flex-direction: column; gap: 8px; }
+.section-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.discover-note { font-size: 11px; color: var(--color-text-muted); }
+
+/* ---- Paper list ---- */
+.paper-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.paper-item {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 9px 10px;
+  box-shadow: var(--shadow);
+}
+.paper-rank {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 3px;
+}
+.paper-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  margin-bottom: 3px;
+}
+.paper-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-bottom: 5px;
+}
+.paper-links { display: flex; gap: 10px; }
+.paper-links a {
+  font-size: 11px;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+.paper-links a:hover { text-decoration: underline; }
+.paper-score {
+  float: right;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-left: 4px;
+}
+
+/* ---- Idle hint ---- */
+.idle-hint {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+/* ---- Footer ---- */
+.footer {
+  padding: 6px 14px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+}
+.bridge-status {
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.bridge-status.ok     { color: var(--color-success); }
+.bridge-status.error  { color: var(--color-error); }

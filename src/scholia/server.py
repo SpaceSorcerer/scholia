@@ -5,21 +5,38 @@ over localhost as a small JSON API. Binds 127.0.0.1 ONLY — never 0.0.0.0.
 
 Endpoints
 ---------
-GET  /health   → {"status":"ok","papers":N,"embedder":str}
-POST /cite     → {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
-POST /discover → {"passage":str,"limit"?:int}
+GET  /health            → {"status":"ok","papers":N,"embedder":str}
+POST /cite              → {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
+POST /discover          → {"passage":str,"limit"?:int}
+GET  /taskpane.html     → task-pane static file (only in --serve-addin mode)
+GET  /taskpane.js       → task-pane static file (only in --serve-addin mode)
+GET  /taskpane.css      → task-pane static file (only in --serve-addin mode)
+GET  /commands.html     → command shim (only in --serve-addin mode)
+GET  /commands.js       → command shim (only in --serve-addin mode)
+GET  /assets/<file>     → icon assets (only in --serve-addin mode)
 
-No new dependencies — stdlib http.server/json/urllib only.
+--serve-addin mode: wraps the HTTPServer in an SSLContext so the pane loads over
+HTTPS and calls /cite same-origin — no CORS, no mixed-content block.
+
+Core dependencies: stdlib only.  HTTPS cert generation requires the ``cryptography``
+package (already in the environment; NOT added to core deps — the plain-HTTP path
+works without it).
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
+import ssl
 import sys
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
+
+# The directory containing the word-addin static files, relative to this module.
+# Resolved at import-time so tests can patch it easily.
+_ADDIN_DIR = Path(__file__).parent.parent.parent / "word-addin"
 
 from scholia.discovery import (
     FakeDiscoverySource,
@@ -52,6 +69,7 @@ class ServerState:
     embedder: Any
     reranker: Any
     fake_source: bool = False
+    addin_dir: Path | None = None  # set when --serve-addin is active
 
 
 def load_state(
@@ -257,8 +275,71 @@ class _ScholiaHandler(BaseHTTPRequestHandler):
                     "embedder": self.state.index.embedder_model or "unknown",
                 }
             )
+        elif self.state.addin_dir is not None and self._is_static_path(self.path):
+            self._serve_static(self.path)
         else:
             self._send_json({"error": f"Not found: {self.path}"}, status=404)
+
+    # -- Static file helpers (task pane) -----------------------------------
+
+    @staticmethod
+    def _is_static_path(path: str) -> bool:
+        """Return True if ``path`` is in the static-file allowlist.
+
+        Only paths in this allowlist are ever served from the addin_dir;
+        everything else falls through to 404.
+        """
+        _STATIC_ALLOWLIST = (
+            "/taskpane.html",
+            "/taskpane.js",
+            "/taskpane.css",
+            "/commands.html",
+            "/commands.js",
+            "/assets/",
+        )
+        return any(path == p or path.startswith(p) for p in _STATIC_ALLOWLIST)
+
+    def _serve_static(self, url_path: str) -> None:
+        """Serve a file from ``self.state.addin_dir`` matching ``url_path``.
+
+        Only paths in ``_STATIC_ALLOWLIST`` reach here (enforced by the caller).
+        Path traversal is prevented by resolving the final path inside addin_dir
+        and checking it stays within that root.
+        """
+        addin_dir = self.state.addin_dir
+        assert addin_dir is not None  # caller guarantees this
+
+        # Strip the leading "/" and resolve safely.
+        rel = url_path.lstrip("/")
+        try:
+            target = (addin_dir / rel).resolve()
+        except Exception:
+            self._send_json({"error": "Bad path"}, status=400)
+            return
+
+        # Security: target must stay inside addin_dir.
+        try:
+            target.relative_to(addin_dir.resolve())
+        except ValueError:
+            self._send_json({"error": "Forbidden"}, status=403)
+            return
+
+        if not target.is_file():
+            self._send_json({"error": f"Not found: {url_path}"}, status=404)
+            return
+
+        content_type, _ = mimetypes.guess_type(str(target))
+        if content_type is None:
+            content_type = "application/octet-stream"
+
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        # CORS header for same-origin (https://127.0.0.1:8765 → /cite etc.)
+        self.send_header("Access-Control-Allow-Origin", "https://127.0.0.1:8765")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
         req = self._read_json_body()
@@ -289,12 +370,19 @@ def serve(
     port: int,
     state: ServerState,
     daemon: bool = False,
+    ssl_certfile: Path | None = None,
+    ssl_keyfile: Path | None = None,
 ) -> HTTPServer:
     """Create and return an HTTPServer bound to ``host:port`` with ``state`` injected.
 
     The caller is responsible for calling ``serve_forever()`` or ``handle_request()``.
     ``host`` MUST be ``127.0.0.1`` (enforced by the CLI; this function accepts it
     as a parameter for test flexibility but never defaults to 0.0.0.0).
+
+    When ``ssl_certfile`` and ``ssl_keyfile`` are provided the socket is wrapped in
+    an SSLContext so the server runs over HTTPS.  The task-pane add-in requires this
+    (Office.js loads the pane from an HTTPS URL; mixed-content blocks plain HTTP).
+    The plain-HTTP path (default) is unchanged — no SSL dependency.
     """
 
     # Inject state via a per-request handler subclass (avoids a global).
@@ -304,4 +392,89 @@ def serve(
     _Handler.state = state  # type: ignore[assignment]
 
     httpd = HTTPServer((host, port), _Handler)
+
+    if ssl_certfile and ssl_keyfile:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=str(ssl_certfile), keyfile=str(ssl_keyfile))
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+
     return httpd
+
+
+# ---------------------------------------------------------------------------
+# Certificate generation helpers (--serve-addin / --https mode)
+# ---------------------------------------------------------------------------
+
+
+def generate_localhost_cert(cert_path: Path, key_path: Path) -> None:
+    """Generate a self-signed localhost certificate using the ``cryptography`` package.
+
+    The cert is valid for 825 days (Apple/Chrome limit) and covers both
+    ``127.0.0.1`` and ``localhost`` as Subject Alternative Names.  This is
+    functionally equivalent to what ``office-addin-dev-certs`` generates but
+    uses only Python so Node is not required at runtime.
+
+    The caller must TRUST the certificate in the OS/browser certificate store
+    before the task pane will load without a security warning.  See
+    ``word-addin/SIDELOAD_WORD.md`` for the trust step.
+
+    Raises ``ImportError`` if the ``cryptography`` package is not installed.
+    Raises ``OSError`` if the cert/key cannot be written.
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError as exc:
+        raise ImportError(
+            "The 'cryptography' package is required for --serve-addin / --https.\n"
+            "Install it:  pip install cryptography"
+        ) from exc
+
+    import datetime
+    import ipaddress
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Scholia localhost")]
+    )
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=825))
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("localhost"),
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+                ]
+            ),
+            critical=False,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=True
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cert_path.write_bytes(
+        cert.public_bytes(serialization.Encoding.PEM)
+    )
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )

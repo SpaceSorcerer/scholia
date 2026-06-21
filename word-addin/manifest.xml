@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Scholia Word Add-in manifest (Office Add-ins v1.1 schema)
+  SourceLocation: https://127.0.0.1:8765/taskpane.html
+  The task pane and all API calls are same-origin (HTTPS on 127.0.0.1).
+  Privacy: no text leaves the local machine; the bridge binds 127.0.0.1 only.
+-->
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+
+  <!-- Unique identifier for this add-in. Never reuse across different add-ins. -->
+  <Id>3301E123-D634-449E-A651-5370FDEBF7F3</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Scholia (local)</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Scholia" />
+  <Description DefaultValue="Ground your scientific writing in your local Zotero library. Privacy-first: nothing leaves your machine." />
+  <IconUrl DefaultValue="https://127.0.0.1:8765/assets/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://127.0.0.1:8765/assets/icon-80.png" />
+  <SupportUrl DefaultValue="https://github.com/SpaceSorcerer/scholia" />
+
+  <AppDomains>
+    <!-- The add-in only talks to the local bridge; no external domains needed. -->
+    <AppDomain>https://127.0.0.1:8765</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Document" />
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://127.0.0.1:8765/taskpane.html" />
+  </DefaultSettings>
+
+  <Permissions>ReadDocument</Permissions>
+
+  <!-- Version overrides: ribbon button for Word Desktop + Word Online -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+
+    <!-- Minimum Word API version required -->
+    <Requirements>
+      <bt:Sets DefaultMinVersion="1.3">
+        <bt:Set Name="WordApi" MinVersion="1.3" />
+      </bt:Sets>
+    </Requirements>
+
+    <Hosts>
+      <Host xsi:type="Document">
+
+        <DesktopFormFactor>
+
+          <!-- FunctionFile: invisible shim page for potential future function cmds -->
+          <FunctionFile resid="Commands.Url" />
+
+          <!-- ExtensionPoint: adds a ribbon tab/group to Word -->
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="ScholiaGroup">
+                <Label resid="GroupLabel" />
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16x16" />
+                  <bt:Image size="32" resid="Icon.32x32" />
+                  <bt:Image size="80" resid="Icon.80x80" />
+                </Icon>
+
+                <!-- "Ground" button: opens the task pane -->
+                <Control xsi:type="Button" id="ScholiaGroundBtn">
+                  <Label resid="GroundBtn.Label" />
+                  <Supertip>
+                    <Title resid="GroundBtn.Label" />
+                    <Description resid="GroundBtn.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ScholiaTaskPane</TaskpaneId>
+                    <SourceLocation resid="TaskPane.Url" />
+                  </Action>
+                </Control>
+
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <!-- String + URL resources -->
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16x16" DefaultValue="https://127.0.0.1:8765/assets/icon-16.png" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://127.0.0.1:8765/assets/icon-32.png" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://127.0.0.1:8765/assets/icon-80.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Commands.Url" DefaultValue="https://127.0.0.1:8765/commands.html" />
+        <bt:Url id="TaskPane.Url"  DefaultValue="https://127.0.0.1:8765/taskpane.html" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="GroupLabel"      DefaultValue="Scholia" />
+        <bt:String id="GroundBtn.Label" DefaultValue="Ground" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="GroundBtn.Tooltip"
+          DefaultValue="Open Scholia to ground the selected passage in your local Zotero library." />
+      </bt:LongStrings>
+    </Resources>
+
+  </VersionOverrides>
+</OfficeApp>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scholia</title>
+  <link rel="stylesheet" href="taskpane.css" />
+  <!-- Office.js is loaded by the Office runtime; this path works for both
+       Word Desktop (from the cached CDN) and Word Online. -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"
+          type="text/javascript"></script>
+  <script src="taskpane.js" type="text/javascript" defer></script>
+</head>
+<body>
+  <header class="header">
+    <img src="assets/icon-32.png" alt="" class="logo" width="24" height="24" />
+    <h1 class="title">Scholia</h1>
+    <span class="tagline">Ground your writing in your library</span>
+  </header>
+
+  <main class="main">
+    <!-- Primary action -->
+    <section class="actions">
+      <button id="btn-ground" class="btn btn-primary">
+        Ground selection
+      </button>
+      <button id="btn-discover" class="btn btn-secondary">
+        Discover
+      </button>
+    </section>
+
+    <!-- Status / error banner -->
+    <div id="status-banner" class="banner hidden"></div>
+
+    <!-- Results panel -->
+    <section id="results" class="results hidden">
+      <div id="verdict-badge" class="verdict-badge"></div>
+
+      <h2 class="section-heading">Supporting papers</h2>
+      <ul id="paper-list" class="paper-list"></ul>
+    </section>
+
+    <!-- Discovery panel -->
+    <section id="discover-results" class="results hidden">
+      <h2 class="section-heading">Papers not yet in your library</h2>
+      <p class="discover-note">Suggestions only — validate before adding.</p>
+      <ul id="discover-list" class="paper-list"></ul>
+    </section>
+
+    <!-- Idle state -->
+    <div id="idle-hint" class="idle-hint">
+      <p>Select a passage in your document, then click <strong>Ground selection</strong>.</p>
+      <p>The pane talks only to your local Scholia engine — nothing leaves your machine.</p>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span id="bridge-status" class="bridge-status">Checking engine…</span>
+  </footer>
+</body>
+</html>

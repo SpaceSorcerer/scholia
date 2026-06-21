@@ -765,9 +765,25 @@ cli.add_command(discover_cmd, name="discover")
                    "Implies --fake-reranker.")
 @click.option("--fake-source", is_flag=True,
               help="Use the deterministic offline discovery source (no network).")
+@click.option("--serve-addin", "serve_addin", is_flag=True,
+              help="Serve the Word add-in task-pane files over HTTPS. "
+                   "Enables --https automatically. Generates a self-signed "
+                   "localhost cert on first run (requires the 'cryptography' "
+                   "package). The cert must be trusted in Windows before the "
+                   "task pane will load — see word-addin/SIDELOAD_WORD.md.")
+@click.option("--https", "use_https", is_flag=True,
+              help="Wrap the server in TLS (HTTPS). "
+                   "Provide --cert and --key, or let --serve-addin auto-generate them.")
+@click.option("--cert", "cert_path", type=click.Path(path_type=Path), default=None,
+              help="Path to a PEM certificate file. Used with --https / --serve-addin. "
+                   "Auto-generated when absent (stored in ~/.scholia/localhost.crt).")
+@click.option("--key", "key_path", type=click.Path(path_type=Path), default=None,
+              help="Path to a PEM private-key file. Auto-generated with the cert.")
 @click.pass_context
 def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
-          no_rerank: bool, fake_embedder: bool, fake_source: bool) -> None:
+          no_rerank: bool, fake_embedder: bool, fake_source: bool,
+          serve_addin: bool, use_https: bool,
+          cert_path: Path | None, key_path: Path | None) -> None:
     """Start a localhost JSON API bridge (cite/discover) for UI clients.
 
     Loads the index + models once at startup so every request is fast. Binds
@@ -778,8 +794,16 @@ def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
       GET  /health   → {"status":"ok","papers":N,"embedder":...}
       POST /cite     → {"passage":str,"k"?:int,"threshold"?:float,"rerank"?:bool}
       POST /discover → {"passage":str,"limit"?:int}
+
+    Add --serve-addin to also serve the Word task-pane static files over HTTPS
+    (required for the Office.js add-in; see word-addin/SIDELOAD_WORD.md).
     """
-    from scholia.server import load_state, serve as _serve
+    from scholia.server import (
+        _ADDIN_DIR,
+        generate_localhost_cert,
+        load_state,
+        serve as _serve,
+    )
 
     if host != "127.0.0.1":
         click.echo(
@@ -787,6 +811,38 @@ def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
             "to the local network.",
             err=True,
         )
+
+    # --serve-addin implies HTTPS.
+    if serve_addin:
+        use_https = True
+
+    # Resolve cert/key paths; auto-generate when running in add-in / HTTPS mode.
+    resolved_cert: Path | None = None
+    resolved_key: Path | None = None
+    if use_https:
+        default_cert_dir = Path.home() / ".scholia"
+        resolved_cert = cert_path or (default_cert_dir / "localhost.crt")
+        resolved_key  = key_path  or (default_cert_dir / "localhost.key")
+
+        if not resolved_cert.exists() or not resolved_key.exists():
+            click.echo(
+                "Generating self-signed localhost certificate "
+                f"(first-run, stored in {default_cert_dir}) …"
+            )
+            try:
+                generate_localhost_cert(resolved_cert, resolved_key)
+            except ImportError as exc:
+                click.echo(str(exc), err=True)
+                ctx.exit(1)
+                return
+            click.echo(
+                f"  Certificate: {resolved_cert}\n"
+                f"  Private key: {resolved_key}\n"
+                "\nIMPORTANT: Trust the certificate before sideloading the add-in.\n"
+                "  See word-addin/SIDELOAD_WORD.md for the trust step."
+            )
+        else:
+            click.echo(f"Using existing certificate: {resolved_cert}")
 
     resolved_index_dir = index_dir or _default_index_dir()
     state = load_state(
@@ -796,12 +852,31 @@ def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
         fake_source=fake_source,
     )
 
-    click.echo(f"Scholia serving on http://{host}:{port}")
+    # Set the addin_dir on state so the handler can serve static files.
+    if serve_addin:
+        addin_dir = _ADDIN_DIR
+        if not addin_dir.is_dir():
+            click.echo(
+                f"Warning: word-addin directory not found at {addin_dir}. "
+                "Static file serving disabled.",
+                err=True,
+            )
+        else:
+            state.addin_dir = addin_dir
+
+    scheme = "https" if use_https else "http"
+    click.echo(f"Scholia serving on {scheme}://{host}:{port}")
     click.echo(
         f"  {len(state.index._papers)} papers | embedder: "
         f"{state.index.embedder_model or 'unknown'}"
     )
-    httpd = _serve(host, port, state)
+    if serve_addin and state.addin_dir:
+        click.echo(
+            f"  Task pane: {scheme}://{host}:{port}/taskpane.html"
+        )
+
+    httpd = _serve(host, port, state,
+                   ssl_certfile=resolved_cert, ssl_keyfile=resolved_key)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
