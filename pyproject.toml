@@ -27,6 +27,9 @@ dependencies = [
     # Required by nomic-embed-text-v1.5's trust_remote_code modeling code;
     # without it the production-default NomicEmbedder fails with ImportError.
     "einops>=0.7",
+    # Required by generate_localhost_cert() for --serve-addin / --https / trust-cert.
+    # Uses only stdlib-safe, cross-platform RSA + X.509 primitives; no system libs.
+    "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]
