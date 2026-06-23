@@ -486,4 +486,83 @@ class TestGroundingEngine:
         call_req = m.call_args[0][0]
         assert call_req["passage"] == "QKI splicing"
 
+    # -- New lazy-load / index_ready tests -----------------------------------
+
+    def test_index_ready_false_before_load(self, tmp_path):
+        """index_ready must be False before anything loads."""
+        engine = GroundingEngine(tmp_path)
+        assert not engine.index_ready
+
+    def test_index_ready_true_after_loaded_set(self, tmp_path):
+        """index_ready becomes True once _loaded is set and _state is populated."""
+        engine = GroundingEngine(tmp_path)
+        engine._state = MagicMock()
+        engine._loaded.set()
+        assert engine.index_ready
+
+    def test_ready_false_when_only_index_loaded(self, tmp_path):
+        """ready is False when only phase 1 (index) is done, models not yet warm."""
+        engine = GroundingEngine(tmp_path)
+        engine._state = MagicMock()
+        engine._loaded.set()
+        # _models_warm is NOT set yet
+        assert not engine.ready
+
+    def test_ready_true_after_both_events_set(self, tmp_path):
+        """ready is True only once both index AND models_warm are set."""
+        engine = GroundingEngine(tmp_path)
+        engine._state = MagicMock()
+        engine._loaded.set()
+        engine._models_warm.set()
+        assert engine.ready
+
+    def test_load_async_fires_on_progress(self, tmp_path):
+        """load_async calls on_progress('index_ready', n) after phase 1."""
+        engine = GroundingEngine(tmp_path)
+        progress_calls: list = []
+        done = threading.Event()
+
+        def _cb(err):
+            done.set()
+
+        def _progress(event, value):
+            progress_calls.append((event, value))
+
+        mock_state = MagicMock()
+        mock_state.index._papers = [1, 2, 3]
+
+        with patch("scholia.server.load_state", return_value=mock_state), \
+             patch("scholia.server.warm_models"):
+            engine.load_async(_cb, on_progress=_progress)
+            done.wait(timeout=5.0)
+
+        # on_progress should have been called with "index_ready"
+        assert any(ev == "index_ready" for ev, _ in progress_calls)
+
+    def test_cite_usable_after_index_ready_not_models(self, tmp_path):
+        """cite() does not raise RuntimeError when index is ready (models may still be warming)."""
+        engine = GroundingEngine(tmp_path)
+        mock_state = MagicMock()
+        mock_state.index._papers = []
+        engine._state = mock_state
+        engine._loaded.set()
+        # _models_warm NOT set — cite() should still not raise
+        mock_result = {"suggestions": [], "claim_check": {}, "ranking_signal": ""}
+        with patch("scholia.server.handle_cite", return_value=mock_result):
+            result = engine.cite("test passage")
+        assert isinstance(result, dict)
+
+    def test_startup_does_not_eagerly_instantiate_real_embedder(self, tmp_path):
+        """GroundingEngine constructor must not trigger any model download/load."""
+        import importlib
+        # If sentence_transformers were loaded here it would trigger a download;
+        # assert the module is not imported as a side-effect of creating the engine.
+        import sys
+        before = "sentence_transformers" in sys.modules
+        engine = GroundingEngine(tmp_path)  # noqa: F841
+        after = "sentence_transformers" in sys.modules
+        # Only fail if sentence_transformers was newly imported (wasn't already loaded).
+        if not before:
+            assert not after, "GroundingEngine constructor must not load sentence_transformers"
+
 

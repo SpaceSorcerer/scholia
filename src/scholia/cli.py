@@ -978,6 +978,25 @@ def serve(ctx: click.Context, index_dir: Path | None, host: str, port: int,
 
     httpd = _serve(host, port, state,
                    ssl_certfile=resolved_cert, ssl_keyfile=resolved_key)
+
+    # Warm models in the background so /health answers immediately and the
+    # first /cite is fast once warming completes.  Fake embedder (test mode)
+    # skips warming — FakeEmbedder has no weights to load.
+    if not fake_embedder:
+        from scholia.server import warm_models_async
+
+        def _on_warm_done() -> None:
+            click.echo("  Models warm — bridge fully ready.")
+
+        click.echo(
+            "  Warming models in background (first use ~15 s warm, "
+            "~50 s on first-ever download)…"
+        )
+        warm_models_async(state, on_done=_on_warm_done)
+    else:
+        # Fake embedder: models are trivially ready immediately.
+        state.models_ready.set()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

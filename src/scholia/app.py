@@ -131,21 +131,58 @@ class GroundingEngine:
     """Loads the Scholia index + models once; exposes cite() and discover().
 
     All heavy ML work runs on a background thread; the Qt panel stays responsive.
+
+    Startup is split into two phases so the panel paints and shows progress:
+
+    1. **Index load** (fast, < 1 s): ``load_state()`` reads the FAISS index from
+       disk.  ``on_progress("index_ready", n_papers)`` fires here so the status
+       bar can update.
+
+    2. **Model warm** (slow, 5–50 s depending on cache): ``warm_models()`` calls
+       ``_ensure_loaded()`` on the embedder then the reranker, loading their
+       weights into RAM.  ``on_done(None)`` fires when both are ready.
+
+    The panel shows honest progress text ("Warming models… (one-time ~15 s)" etc.)
+    during phase 2.  Cite/discover calls that arrive before models are warm block
+    inside ``handle_cite`` (which waits on ``state.models_ready``) — but because
+    they run on a Worker QThread the panel stays live.
     """
 
     def __init__(self, index_dir: Path) -> None:
         self._index_dir = index_dir
         self._state: Any = None  # ServerState once loaded
         self._load_error: str | None = None
-        self._loaded = threading.Event()
+        self._loaded = threading.Event()  # set when index is loaded (phase 1)
+        self._models_warm = threading.Event()  # set when models are warm (phase 2)
 
-    def load_async(self, on_done: "callable[[str | None], None]") -> None:
-        """Load the engine on a background thread.  Calls on_done(error_msg|None)."""
+    def load_async(
+        self,
+        on_done: "callable[[str | None], None]",
+        on_progress: "callable[[str, Any], None] | None" = None,
+    ) -> None:
+        """Load index then warm models on a background thread.
+
+        Phases
+        ------
+        1. ``load_state()`` — index + model constructors (fast).
+           Fires ``on_progress("index_ready", n_papers)`` if provided.
+        2. ``warm_models()`` — loads embedder + reranker weights into RAM.
+           Fires ``on_done(None)`` when complete.
+
+        On any error fires ``on_done(error_str)``.
+        """
         def _work():
             try:
-                from scholia.server import load_state
+                from scholia.server import load_state, warm_models
                 self._state = load_state(self._index_dir)
+                # Phase 1 complete — index is ready.
                 self._loaded.set()
+                n = len(self._state.index._papers)
+                if on_progress is not None:
+                    on_progress("index_ready", n)
+                # Phase 2 — warm the embedder + reranker (slow on first/cold run).
+                warm_models(self._state)
+                self._models_warm.set()
                 on_done(None)
             except SystemExit:
                 # load_state calls sys.exit(1) if no index exists.
@@ -155,18 +192,26 @@ class GroundingEngine:
                     "See QUICKSTART_TESTING.md for details."
                 )
                 self._loaded.set()
+                self._models_warm.set()
                 on_done(self._load_error)
             except Exception as exc:  # noqa: BLE001
                 self._load_error = str(exc)
                 self._loaded.set()
+                self._models_warm.set()
                 on_done(self._load_error)
 
         t = threading.Thread(target=_work, daemon=True)
         t.start()
 
     @property
-    def ready(self) -> bool:
+    def index_ready(self) -> bool:
+        """True once the FAISS index is loaded (phase 1 — fast)."""
         return self._loaded.is_set() and self._state is not None
+
+    @property
+    def ready(self) -> bool:
+        """True once BOTH the index AND models are warm (phase 2 — slow)."""
+        return self._models_warm.is_set() and self._state is not None
 
     @property
     def n_papers(self) -> int:
@@ -175,15 +220,20 @@ class GroundingEngine:
         return len(self._state.index._papers)
 
     def cite(self, passage: str, k: int = TOP_N) -> dict[str, Any]:
-        """Ground passage in-process (blocking; call from a background thread)."""
-        if not self.ready:
+        """Ground passage in-process (blocking; call from a background thread).
+
+        Waits for the index to be loaded (fast).  If models are still warming
+        when this is called, ``handle_cite`` will wait on ``state.models_ready``
+        internally — the caller (Worker QThread) blocks but the UI stays live.
+        """
+        if not self.index_ready:
             raise RuntimeError("Engine not loaded yet.")
         from scholia.server import handle_cite
         return handle_cite({"passage": passage, "k": k}, self._state)
 
     def discover(self, passage: str, limit: int = 8) -> dict[str, Any]:
         """Run discovery in-process (blocking; call from a background thread)."""
-        if not self.ready:
+        if not self.index_ready:
             raise RuntimeError("Engine not loaded yet.")
         from scholia.server import handle_discover
         return handle_discover({"passage": passage, "limit": limit}, self._state)
@@ -560,8 +610,8 @@ def run_app(index_dir: Path | None = None) -> None:
         results_browser.setHtml(html_str)
 
     def _run_ground(passage: str, also_discover: bool = False):
-        if not engine.ready:
-            _show_error("Engine still loading — please wait a moment.")
+        if not engine.index_ready:
+            _show_error("Index still loading — please wait a moment.")
             return
         if not passage.strip():
             _show_error("Nothing to ground — enter a passage first.")
@@ -583,8 +633,8 @@ def run_app(index_dir: Path | None = None) -> None:
         w.start()
 
     def _run_discover(passage: str):
-        if not engine.ready:
-            _show_error("Engine still loading — please wait a moment.")
+        if not engine.index_ready:
+            _show_error("Index still loading — please wait a moment.")
             return
         if not passage.strip():
             _show_error("Nothing to discover from — enter a passage first.")
@@ -731,8 +781,27 @@ def run_app(index_dir: Path | None = None) -> None:
     tray.show()
 
     # -- Engine loading ---------------------------------------------------
+    def _on_index_ready(event: str, n_papers: int):
+        """Called on engine background thread after index loads (phase 1 — fast).
+
+        The embedder + reranker are still warming in the background. We enable
+        the buttons immediately so the user can queue a request; the Worker
+        thread will wait on ``models_ready`` inside ``handle_cite`` rather than
+        blocking the UI.
+        """
+        def _update():
+            status_lbl.setText(
+                f"Warming models… (first use ~15 s)  |  {n_papers} papers"
+            )
+            status_lbl.setStyleSheet("font-size:10px; color:#D97706;")
+            btn_ground.setEnabled(True)
+            btn_ground_text.setEnabled(True)
+            btn_discover.setEnabled(True)
+
+        QTimer.singleShot(0, _update)
+
     def _on_engine_loaded(error: str | None):
-        """Called on engine background thread — schedule Qt update via QTimer."""
+        """Called on engine background thread when models are fully warm (phase 2)."""
         def _update():
             if error:
                 status_lbl.setText(f"Engine error: {error}")
@@ -751,10 +820,6 @@ def run_app(index_dir: Path | None = None) -> None:
                 n = engine.n_papers
                 status_lbl.setText(f"Ready  |  {n} papers  |  Ctrl+Alt+G to ground")
                 status_lbl.setStyleSheet("font-size:10px; color:#059669;")
-                results_browser.setHtml(_results_html())
-                btn_ground.setEnabled(True)
-                btn_ground_text.setEnabled(True)
-                btn_discover.setEnabled(True)
                 tray.showMessage(
                     "Scholia ready",
                     f"{n} papers indexed. Press Ctrl+Alt+G to ground any selection.",
@@ -764,14 +829,15 @@ def run_app(index_dir: Path | None = None) -> None:
 
         QTimer.singleShot(0, _update)
 
-    # Disable buttons until engine is ready
+    # Disable buttons until index is ready (phase 1 fires _on_index_ready and
+    # re-enables them with the warming-models notice).
     btn_ground.setEnabled(False)
     btn_ground_text.setEnabled(False)
     btn_discover.setEnabled(False)
 
-    # Show panel immediately (loading state), then start engine
+    # Show panel immediately, then start loading in background.
     panel.show()
-    engine.load_async(_on_engine_loaded)
+    engine.load_async(_on_engine_loaded, on_progress=_on_index_ready)
 
     # -- Run the event loop -----------------------------------------------
     exit_code = app.exec()

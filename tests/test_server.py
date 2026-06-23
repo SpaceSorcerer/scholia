@@ -30,17 +30,24 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _build_state(tmp_path, fake_source: bool = True) -> ServerState:
-    """Build a minimal ServerState backed by the fixture corpus."""
+    """Build a minimal ServerState backed by the fixture corpus.
+
+    Sets ``models_ready`` immediately because FakeEmbedder/FakeReranker have
+    no weights to load — handle_cite's ``state.models_ready.wait()`` must not
+    block unit tests.
+    """
     papers = load_corpus(FIXTURES / "corpus")
     embedder = FakeEmbedder(dim=16)
     index = build_index(papers, embedder, tmp_path / "idx")
     reranker = FakeReranker()
-    return ServerState(
+    state = ServerState(
         index=index,
         embedder=embedder,
         reranker=reranker,
         fake_source=fake_source,
     )
+    state.models_ready.set()  # Fakes are trivially ready — no load needed.
+    return state
 
 
 # ---------------------------------------------------------------------------

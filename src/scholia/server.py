@@ -29,6 +29,7 @@ import json
 import mimetypes
 import ssl
 import sys
+import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -63,13 +64,19 @@ _DEFAULT_LIMIT = 8
 
 @dataclass
 class ServerState:
-    """All models and index loaded once at startup."""
+    """All models and index loaded once at startup.
+
+    ``models_ready`` is set by ``warm_models()`` once the embedder (and optional
+    reranker) have finished loading their weights.  Handlers that need a warm
+    model can wait on it with a short timeout rather than blocking the caller.
+    """
 
     index: ScholiaIndex
     embedder: Any
     reranker: Any
     fake_source: bool = False
     addin_dir: Path | None = None  # set when --serve-addin is active
+    models_ready: threading.Event = field(default_factory=threading.Event)
 
 
 def load_state(
@@ -115,6 +122,57 @@ def load_state(
     )
 
 
+def warm_models(state: ServerState) -> None:
+    """Pre-load (warm) the embedder and reranker weights into RAM synchronously.
+
+    Call this once after ``load_state()`` — on a background thread for the
+    bridge/serve path so the server socket is already listening; from the app's
+    ``load_async`` background thread so the window paints before models load.
+
+    When done it sets ``state.models_ready`` so waiting callers can proceed.
+    Safe to call multiple times (the underlying ``_ensure_loaded`` is idempotent).
+    """
+    try:
+        _ensure = getattr(state.embedder, "_ensure_loaded", None)
+        if _ensure is not None:
+            _ensure()
+    except Exception:  # noqa: BLE001 — never crash a background warm thread
+        pass
+
+    if state.reranker is not None:
+        try:
+            _ensure_r = getattr(state.reranker, "_ensure_loaded", None)
+            if _ensure_r is not None:
+                _ensure_r()
+        except Exception:  # noqa: BLE001
+            pass
+
+    state.models_ready.set()
+
+
+def warm_models_async(
+    state: ServerState,
+    on_done: "callable[[], None] | None" = None,
+) -> threading.Thread:
+    """Warm the embedder + reranker on a daemon thread; call ``on_done`` when ready.
+
+    Returns the Thread so the caller can join if needed.  The thread is daemonic
+    so it never prevents interpreter exit.
+    """
+
+    def _work() -> None:
+        warm_models(state)
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception:  # noqa: BLE001
+                pass
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    return t
+
+
 # ---------------------------------------------------------------------------
 # Pure handler functions — unit-testable, no sockets
 # ---------------------------------------------------------------------------
@@ -147,7 +205,17 @@ def handle_cite(req: dict, state: ServerState) -> dict:
 
     Uses the reranked path by default (same as cli.py); pass ``rerank: false`` in
     the request body to force the bi-encoder path.
+
+    If the embedder/reranker have not finished warming yet (``state.models_ready``
+    is unset) this call will block until they are ready — the models WILL load,
+    so the wait is finite.  Callers on a non-UI thread (bridge request handler,
+    app Worker QThread) are safe to block here.
     """
+    # Wait for background model-warm to finish; 300 s is a very generous upper
+    # bound for a first-ever download on a slow connection.  In practice warm
+    # loads finish in < 20 s and cached loads in < 5 s.
+    state.models_ready.wait(timeout=300)
+
     passage = req.get("passage", "")
     k = int(req.get("k", _DEFAULT_K))
     threshold = req.get("threshold")

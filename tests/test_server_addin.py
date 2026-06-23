@@ -50,13 +50,15 @@ def _build_state(tmp_path, addin_dir=None) -> ServerState:
     embedder = FakeEmbedder(dim=16)
     index = build_index(papers, embedder, tmp_path / "idx")
     reranker = FakeReranker()
-    return ServerState(
+    state = ServerState(
         index=index,
         embedder=embedder,
         reranker=reranker,
         fake_source=True,
         addin_dir=addin_dir,
     )
+    state.models_ready.set()  # Fakes are trivially ready — no load needed.
+    return state
 
 
 # ---------------------------------------------------------------------------

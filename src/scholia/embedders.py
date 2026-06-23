@@ -110,7 +110,18 @@ class NomicEmbedder(_DefaultPrefixMixin):
     def _ensure_loaded(self) -> None:
         if self._model is None:
             self._model = self._load_backend()
-            self.dim = int(self._model.get_sentence_embedding_dimension())
+            # get_sentence_embedding_dimension() was renamed in sentence-transformers
+            # >=3.x; fall back gracefully so either version works.
+            _dim_fn = getattr(
+                self._model,
+                "get_embedding_dimension",
+                None,
+            ) or getattr(
+                self._model,
+                "get_sentence_embedding_dimension",
+                None,
+            )
+            self.dim = int(_dim_fn()) if _dim_fn is not None else 768
 
     def embed(self, texts: list[str]) -> np.ndarray:
         self._ensure_loaded()
