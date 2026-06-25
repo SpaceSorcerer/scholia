@@ -24,25 +24,59 @@ let resultsSection, verdictBadge, paperList;
 let discoverSection, discoverList;
 let bridgeStatus;
 
-Office.onReady(info => {
-  // Wire up DOM refs after Office is ready (DOM is guaranteed loaded).
-  btnGround      = document.getElementById("btn-ground");
-  btnDiscover    = document.getElementById("btn-discover");
-  statusBanner   = document.getElementById("status-banner");
-  idleHint       = document.getElementById("idle-hint");
-  resultsSection = document.getElementById("results");
-  verdictBadge   = document.getElementById("verdict-badge");
-  paperList      = document.getElementById("paper-list");
-  discoverSection= document.getElementById("discover-results");
-  discoverList   = document.getElementById("discover-list");
-  bridgeStatus   = document.getElementById("bridge-status");
+// ---- Global error surface (catches failures BEFORE Office.onReady fires) ----
+// These handlers write into #bridge-status (which is always in the DOM) so
+// the user sees a concrete message instead of Office's opaque "not functioning".
 
-  if (info.host === Office.HostType.Word) {
-    btnGround.addEventListener("click", onGroundClick);
-    btnDiscover.addEventListener("click", onDiscoverClick);
-    checkBridgeHealth();
-  } else {
-    showBanner("This add-in only works inside Word.", "error");
+window.onerror = function (message, source, lineno, colno, error) {
+  const detail = error ? String(error) : String(message);
+  _setEngineStatus(
+    "Pane error: " + detail + " (" + (source || "?") + ":" + lineno + ")",
+    "error"
+  );
+  return false; // let the browser also log to console
+};
+
+window.addEventListener("unhandledrejection", function (event) {
+  const reason = event.reason
+    ? (event.reason.message || String(event.reason))
+    : "Unhandled promise rejection";
+  _setEngineStatus("Pane error: " + reason, "error");
+});
+
+// ---- Low-level engine-status helper (safe to call before DOM fully ready) ----
+function _setEngineStatus(text, cssClass) {
+  // bridgeStatus may not be assigned yet (pre-onReady); look it up directly.
+  const el = bridgeStatus || document.getElementById("bridge-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "bridge-status " + (cssClass || "");
+}
+
+Office.onReady(info => {
+  try {
+    // Wire up DOM refs after Office is ready (DOM is guaranteed loaded).
+    btnGround      = document.getElementById("btn-ground");
+    btnDiscover    = document.getElementById("btn-discover");
+    statusBanner   = document.getElementById("status-banner");
+    idleHint       = document.getElementById("idle-hint");
+    resultsSection = document.getElementById("results");
+    verdictBadge   = document.getElementById("verdict-badge");
+    paperList      = document.getElementById("paper-list");
+    discoverSection= document.getElementById("discover-results");
+    discoverList   = document.getElementById("discover-list");
+    bridgeStatus   = document.getElementById("bridge-status");
+
+    if (info.host === Office.HostType.Word) {
+      btnGround.addEventListener("click", onGroundClick);
+      btnDiscover.addEventListener("click", onDiscoverClick);
+      _setEngineStatus("Connecting to Scholia engine…", "loading");
+      checkBridgeHealth();
+    } else {
+      showBanner("This add-in only works inside Word.", "error");
+    }
+  } catch (e) {
+    _setEngineStatus("Startup error: " + (e.message || String(e)), "error");
   }
 });
 
@@ -52,11 +86,13 @@ async function checkBridgeHealth() {
     const res = await fetch(`${BRIDGE_BASE}/health`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    bridgeStatus.textContent = `Engine running · ${data.papers} papers`;
-    bridgeStatus.className = "bridge-status ok";
-  } catch {
-    bridgeStatus.textContent = "Engine offline";
-    bridgeStatus.className = "bridge-status error";
+    _setEngineStatus(`Engine online · ${data.papers} papers`, "ok");
+  } catch (e) {
+    const detail = e && e.message ? e.message : String(e);
+    _setEngineStatus(
+      "Can't reach the Scholia engine — is 'Scholia for Word' running? (" + detail + ")",
+      "error"
+    );
   }
 }
 

@@ -183,5 +183,6 @@ body {
   font-size: 10px;
   color: var(--color-text-muted);
 }
-.bridge-status.ok     { color: var(--color-success); }
-.bridge-status.error  { color: var(--color-error); }
+.bridge-status.ok      { color: var(--color-success); }
+.bridge-status.error   { color: var(--color-error); }
+.bridge-status.loading { color: var(--color-primary); }
