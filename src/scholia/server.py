@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import ssl
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -433,6 +435,98 @@ class _ScholiaHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"Not found: {self.path}"}, status=404)
 
 
+def _validate_cert_key(cert_path: Path, key_path: Path) -> str | None:
+    """Check that cert_path and key_path form a valid, matching, unexpired pair.
+
+    Returns ``None`` if the pair is valid and ready to use.
+    Returns a short human-readable reason string if ANY check fails:
+    - cert or key file is missing / unreadable
+    - cert/key mismatch (ssl.SSLError KEY_VALUES_MISMATCH or load failure)
+    - cert is expired
+    - cert is missing the serverAuth EKU (Chromium/WebView2 requires it)
+    """
+    import datetime
+
+    if not cert_path.exists() or not key_path.exists():
+        return "cert or key file missing"
+
+    # 1. Load via SSLContext — catches KEY_VALUES_MISMATCH immediately.
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    except ssl.SSLError as exc:
+        return f"ssl load failed: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return f"cert load error: {exc}"
+
+    # 2. Deep validation via cryptography (expiry + EKU).
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import ExtendedKeyUsageOID
+
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+
+        # Expiry check.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if now >= cert.not_valid_after_utc:
+            return "cert is expired"
+
+        # EKU serverAuth check — required by Chromium/WebView2.
+        try:
+            eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+            if ExtendedKeyUsageOID.SERVER_AUTH not in eku.value:
+                return "cert missing serverAuth EKU"
+        except Exception:  # noqa: BLE001
+            return "cert missing ExtendedKeyUsage extension"
+
+    except ImportError:
+        pass  # cryptography not available; SSLContext check above is sufficient
+
+    return None  # all checks passed
+
+
+def _install_cert_trust(cert_path: Path) -> tuple[bool, str]:
+    """Install ``cert_path`` into the CurrentUser\\Root trust store (Windows only).
+
+    Calls ``certutil -user -addstore Root`` which requires no admin elevation
+    and is idempotent (certutil deduplicates by thumbprint).
+
+    Returns ``(success, message)``.  On non-Windows returns ``(True, "skip")``.
+    """
+    import subprocess
+    import sys as _sys
+
+    if _sys.platform != "win32":
+        return True, "skip"
+
+    try:
+        result = subprocess.run(
+            ["certutil", "-user", "-addstore", "Root", str(cert_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        return False, (
+            "certutil not found on PATH. "
+            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            "certutil timed out after 60 s. "
+            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
+        )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout
+        return False, (
+            f"certutil -user -addstore Root failed (rc={result.returncode}): {detail}. "
+            "Fallback: certlm.msc → Trusted Root Certification Authorities → Import."
+        )
+    return True, "Certificate installed into CurrentUser\\Root (no admin needed)."
+
+
 def serve(
     host: str,
     port: int,
@@ -462,6 +556,19 @@ def serve(
     httpd = HTTPServer((host, port), _Handler)
 
     if ssl_certfile and ssl_keyfile:
+        # Self-healing: validate the cert/key pair BEFORE binding the SSL socket.
+        # If the pair is invalid (mismatched, expired, missing EKU) regenerate it
+        # and re-trust it so serve() never crashes on KEY_VALUES_MISMATCH.
+        reason = _validate_cert_key(ssl_certfile, ssl_keyfile)
+        if reason is not None:
+            print(
+                f"Certificate was invalid/mismatched ({reason}) — "
+                "regenerated and re-trusted.",
+                file=sys.stderr,
+            )
+            generate_localhost_cert(ssl_certfile, ssl_keyfile)
+            _install_cert_trust(ssl_certfile)
+
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=str(ssl_certfile), keyfile=str(ssl_keyfile))
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
@@ -543,13 +650,51 @@ def generate_localhost_cert(cert_path: Path, key_path: Path) -> None:
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cert_path.write_bytes(
-        cert.public_bytes(serialization.Encoding.PEM)
+    cert_bytes = cert.public_bytes(serialization.Encoding.PEM)
+    key_bytes = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
     )
-    key_path.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
+
+    # Write atomically: build both files in temp siblings, then os.replace()
+    # so a crash or concurrent run can never leave a cert from one generation
+    # paired with a key from another.
+    tmp_cert = None
+    tmp_key = None
+    try:
+        fd, tmp_cert_path = tempfile.mkstemp(
+            dir=str(cert_path.parent), suffix=".tmp"
         )
-    )
+        tmp_cert = Path(tmp_cert_path)
+        try:
+            os.write(fd, cert_bytes)
+        finally:
+            os.close(fd)
+
+        fd, tmp_key_path = tempfile.mkstemp(
+            dir=str(key_path.parent), suffix=".tmp"
+        )
+        tmp_key = Path(tmp_key_path)
+        try:
+            os.write(fd, key_bytes)
+        finally:
+            os.close(fd)
+
+        # Both temp files are complete — atomically swap them into place.
+        os.replace(str(tmp_cert), str(cert_path))
+        tmp_cert = None  # os.replace consumed it
+        os.replace(str(tmp_key), str(key_path))
+        tmp_key = None   # os.replace consumed it
+    finally:
+        # Clean up any leftover temp files on failure.
+        if tmp_cert is not None:
+            try:
+                tmp_cert.unlink()
+            except OSError:
+                pass
+        if tmp_key is not None:
+            try:
+                tmp_key.unlink()
+            except OSError:
+                pass

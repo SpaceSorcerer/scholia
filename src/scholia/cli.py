@@ -751,54 +751,29 @@ cli.add_command(discover_cmd, name="discover")
 
 
 def _trust_cert_windows(cert_path: Path) -> tuple[bool, str]:
-    """Install cert_path into the CurrentUser\\Root store silently via Python ssl.
+    """Install cert_path into the CurrentUser\\Root store silently via certutil.
 
-    Uses Python's ``ssl.enum_certificates`` / Windows CryptoAPI through the
-    ``ssl`` stdlib to open the store, then ``certutil -user -addstore Root`` as
-    the actual import tool (Windows inbox, no elevation, no admin required).
+    Thin shim that delegates to ``scholia.server._install_cert_trust``, which
+    holds the implementation.  Kept here for backward-compatibility with tests
+    that mock ``scholia.cli._trust_cert_windows``.
 
-    Idempotent: re-importing a cert that is already trusted is safe — certutil
-    deduplicates by thumbprint and exits 0.
-
-    Returns (success, message).  The call is made with
-    ``capture_output=True`` so no extra console windows appear; stdout/stderr
-    are surfaced only on failure.
+    Returns (success, message).
     """
-    try:
-        result = subprocess.run(
-            ["certutil", "-user", "-addstore", "Root", str(cert_path)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except FileNotFoundError:
-        return False, (
-            "certutil not found on PATH. "
-            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
-        )
-    except subprocess.TimeoutExpired:
-        return False, (
-            "certutil timed out after 60 s. "
-            "Trust the cert manually via certlm.msc (see word-addin/SIDELOAD_WORD.md)."
-        )
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip()
-        detail = stderr or stdout
-        return False, (
-            f"certutil -user -addstore Root failed (rc={result.returncode}): {detail}. "
-            "Fallback: certlm.msc → Trusted Root Certification Authorities → Import "
-            "(see word-addin/SIDELOAD_WORD.md)."
-        )
-    return True, "Certificate installed into CurrentUser\\Root (no admin needed)."
+    from scholia.server import _install_cert_trust
+
+    return _install_cert_trust(cert_path)
 
 
 @cli.command(name="trust-cert")
 @click.option("--cert", "cert_path", type=click.Path(path_type=Path), default=None,
               help="Path to the PEM certificate to trust. Defaults to "
                    "~/.scholia/localhost.crt (auto-generated if missing).")
+@click.option("--key", "key_path", type=click.Path(path_type=Path), default=None,
+              help="Path to the PEM private-key file paired with --cert. "
+                   "Defaults to a .key file next to the cert.")
 @click.pass_context
-def trust_cert(ctx: click.Context, cert_path: Path | None) -> None:
+def trust_cert(ctx: click.Context, cert_path: Path | None,
+               key_path: Path | None) -> None:
     """Trust the Scholia localhost certificate in the OS store (one-time setup).
 
     Ensures the self-signed localhost cert exists (generates it if not), then
@@ -812,7 +787,16 @@ def trust_cert(ctx: click.Context, cert_path: Path | None) -> None:
 
     default_cert_dir = Path.home() / ".scholia"
     resolved_cert = cert_path or (default_cert_dir / "localhost.crt")
-    resolved_key = default_cert_dir / "localhost.key"
+
+    # Derive the key path: if --key is given use it; if --cert was given derive
+    # from its sibling (same dir, .key extension); else fall back to the default
+    # dir.  This ensures cert and key always live together — no cross-dir pairing.
+    if key_path is not None:
+        resolved_key = key_path
+    elif cert_path is not None:
+        resolved_key = cert_path.with_suffix(".key")
+    else:
+        resolved_key = default_cert_dir / "localhost.key"
 
     # (a) Ensure the cert exists — generate if missing.
     if not resolved_cert.exists() or not resolved_key.exists():

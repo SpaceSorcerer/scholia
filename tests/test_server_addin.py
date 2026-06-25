@@ -31,6 +31,7 @@ from scholia.rerank import FakeReranker
 from scholia.server import (
     ServerState,
     _ScholiaHandler,
+    _validate_cert_key,
     generate_localhost_cert,
     handle_cite,
     serve,
@@ -154,6 +155,185 @@ class TestGenerateLocalhostCert:
         # 3. BasicConstraints must mark the cert as non-CA.
         bc = cert.extensions.get_extension_for_class(x509.BasicConstraints)
         assert bc.value.ca is False, "Cert must have BasicConstraints ca=False"
+
+
+# ---------------------------------------------------------------------------
+# Atomic cert generation
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicCertGeneration:
+    """generate_localhost_cert() must write both files atomically so a crash or
+    concurrent run never leaves a cert from one generation paired with a key
+    from another."""
+
+    def test_generates_matching_pair(self, tmp_path):
+        """After generation the cert and key must load together without error."""
+        cert = tmp_path / "localhost.crt"
+        key  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))  # must not raise
+
+    def test_no_residual_temp_files(self, tmp_path):
+        """No .tmp files should remain in the directory after a clean generation."""
+        cert = tmp_path / "localhost.crt"
+        key  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+        leftover = list(tmp_path.glob("*.tmp"))
+        assert leftover == [], f"Leftover temp files: {leftover}"
+
+    def test_second_generation_still_matching(self, tmp_path):
+        """Running twice leaves a new matching pair (no stale key from first run)."""
+        cert = tmp_path / "localhost.crt"
+        key  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+        generate_localhost_cert(cert, key)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Cert/key validation helper
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCertKey:
+    """_validate_cert_key() returns None for a good pair, str reason for bad ones."""
+
+    def test_valid_pair_returns_none(self, tmp_path):
+        cert = tmp_path / "localhost.crt"
+        key  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+        assert _validate_cert_key(cert, key) is None
+
+    def test_missing_cert_returns_reason(self, tmp_path):
+        key = tmp_path / "localhost.key"
+        key.write_bytes(b"fake")
+        reason = _validate_cert_key(tmp_path / "missing.crt", key)
+        assert reason is not None
+        assert "missing" in reason.lower()
+
+    def test_missing_key_returns_reason(self, tmp_path):
+        cert = tmp_path / "localhost.crt"
+        cert.write_bytes(b"fake")
+        reason = _validate_cert_key(cert, tmp_path / "missing.key")
+        assert reason is not None
+        assert "missing" in reason.lower()
+
+    def test_mismatched_pair_returns_reason(self, tmp_path):
+        """A cert generated with one key paired with a key from a different generation
+        must be detected as invalid."""
+        cert1 = tmp_path / "c1.crt"
+        key1  = tmp_path / "c1.key"
+        cert2 = tmp_path / "c2.crt"
+        key2  = tmp_path / "c2.key"
+        generate_localhost_cert(cert1, key1)
+        generate_localhost_cert(cert2, key2)
+
+        # Cross-pair: cert from generation 1, key from generation 2.
+        reason = _validate_cert_key(cert1, key2)
+        assert reason is not None, "mismatched pair must be detected"
+
+
+# ---------------------------------------------------------------------------
+# Self-healing serve()
+# ---------------------------------------------------------------------------
+
+
+class TestServeSSLSelfHeal:
+    """serve() must self-heal an invalid cert/key pair instead of crashing.
+
+    The OS-store trust step (_install_cert_trust) is mocked so tests do not
+    touch the real certificate store and do not block on certutil.
+    """
+
+    def _make_mismatched(self, tmp_path):
+        """Return (bad_cert, bad_key) — cert from gen-1 paired with key from gen-2."""
+        cert1 = tmp_path / "c1.crt"
+        key1  = tmp_path / "c1.key"
+        cert2 = tmp_path / "c2.crt"
+        key2  = tmp_path / "c2.key"
+        generate_localhost_cert(cert1, key1)
+        generate_localhost_cert(cert2, key2)
+
+        bad_cert = tmp_path / "localhost.crt"
+        bad_key  = tmp_path / "localhost.key"
+        bad_cert.write_bytes(cert1.read_bytes())  # cert from gen-1
+        bad_key.write_bytes(key2.read_bytes())    # key  from gen-2
+        return bad_cert, bad_key
+
+    def test_mismatched_pair_triggers_self_heal(self, tmp_path):
+        """serve() given a mismatched cert+key must regenerate a matching pair
+        and return a working SSLSocket (no ssl.SSLError raised)."""
+        bad_cert, bad_key = self._make_mismatched(tmp_path)
+
+        # Confirm the pair is bad before calling serve().
+        assert _validate_cert_key(bad_cert, bad_key) is not None
+
+        state = _build_state(tmp_path)
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        # Mock _install_cert_trust so we never call certutil in tests.
+        with unittest.mock.patch(
+            "scholia.server._install_cert_trust",
+            return_value=(True, "mocked trust"),
+        ):
+            # serve() must NOT raise — it heals the cert and returns an SSLSocket.
+            httpd = serve("127.0.0.1", port, state,
+                          ssl_certfile=bad_cert, ssl_keyfile=bad_key)
+        try:
+            assert isinstance(httpd.socket, ssl.SSLSocket)
+        finally:
+            httpd.server_close()
+
+        # After self-heal the pair must be valid.
+        assert _validate_cert_key(bad_cert, bad_key) is None
+
+    def test_healed_pair_is_matching(self, tmp_path):
+        """After self-heal serve() writes a fresh matching pair."""
+        bad_cert, bad_key = self._make_mismatched(tmp_path)
+
+        state = _build_state(tmp_path)
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        with unittest.mock.patch(
+            "scholia.server._install_cert_trust",
+            return_value=(True, "mocked trust"),
+        ):
+            httpd = serve("127.0.0.1", port, state,
+                          ssl_certfile=bad_cert, ssl_keyfile=bad_key)
+        httpd.server_close()
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=str(bad_cert), keyfile=str(bad_key))  # must not raise
+
+    def test_good_pair_skips_self_heal(self, tmp_path):
+        """serve() given a valid cert+key must NOT call generate_localhost_cert."""
+        cert = tmp_path / "localhost.crt"
+        key  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert, key)
+
+        state = _build_state(tmp_path)
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        with unittest.mock.patch(
+            "scholia.server.generate_localhost_cert"
+        ) as mock_gen:
+            httpd = serve("127.0.0.1", port, state,
+                          ssl_certfile=cert, ssl_keyfile=key)
+            httpd.server_close()
+
+        mock_gen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
