@@ -493,7 +493,7 @@ def generate_localhost_cert(cert_path: Path, key_path: Path) -> None:
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     except ImportError as exc:
         raise ImportError(
             "The 'cryptography' package is required for --serve-addin / --https.\n"
@@ -529,6 +529,13 @@ def generate_localhost_cert(cert_path: Path, key_path: Path) -> None:
         )
         .add_extension(
             x509.BasicConstraints(ca=False, path_length=None), critical=True
+        )
+        .add_extension(
+            # Chromium/WebView2 (used by the Word task pane) REQUIRES the
+            # serverAuth EKU on a server cert, or it rejects the page with
+            # ERR_CERT_INVALID and Office shows "add-in not functioning".
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
         )
         .sign(key, hashes.SHA256())
     )

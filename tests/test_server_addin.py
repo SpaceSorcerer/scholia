@@ -117,6 +117,44 @@ class TestGenerateLocalhostCert:
         assert cert.exists()
         assert key.exists()
 
+    def test_has_extended_key_usage_server_auth(self, tmp_path):
+        """Cert must have EKU=serverAuth — Chromium/WebView2 rejects without it.
+
+        This test FAILS if ``generate_localhost_cert`` does not add the
+        ExtendedKeyUsage(SERVER_AUTH) extension and PASSES once the fix is
+        present.  Root-cause: without serverAuth EKU Chromium raises
+        ERR_CERT_INVALID and Office shows "add-in not functioning".
+        """
+        from cryptography import x509
+        from cryptography.x509.oid import ExtendedKeyUsageOID
+
+        cert_path = tmp_path / "localhost.crt"
+        key_path  = tmp_path / "localhost.key"
+        generate_localhost_cert(cert_path, key_path)
+
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+
+        # 1. ExtendedKeyUsage must be present and include serverAuth.
+        eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        assert ExtendedKeyUsageOID.SERVER_AUTH in eku.value, (
+            "Cert is missing ExtendedKeyUsage(serverAuth) — "
+            "Chromium/WebView2 will reject it with ERR_CERT_INVALID"
+        )
+
+        # 2. SubjectAlternativeName must cover localhost + 127.0.0.1.
+        import ipaddress
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        dns_names = san.value.get_values_for_type(x509.DNSName)
+        ip_addrs  = san.value.get_values_for_type(x509.IPAddress)
+        assert "localhost" in dns_names, "SAN must include DNS:localhost"
+        assert ipaddress.IPv4Address("127.0.0.1") in ip_addrs, (
+            "SAN must include IP:127.0.0.1"
+        )
+
+        # 3. BasicConstraints must mark the cert as non-CA.
+        bc = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+        assert bc.value.ca is False, "Cert must have BasicConstraints ca=False"
+
 
 # ---------------------------------------------------------------------------
 # ServerState.addin_dir field
